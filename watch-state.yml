@@ -1,0 +1,39 @@
+version: "1.0"
+created: 2025-10-15T16:58:27.157109897-04:00
+updated: 2025-10-15T17:23:37.573643067-04:00
+monitors:
+    https://httpbin.org/delay/1:
+        name: Slow Service
+        url: https://httpbin.org/delay/1
+        method: GET
+        headers: {}
+        threshold: 45
+        statuscodes:
+            - '*'
+        checkstrategy: http
+        alertstrategy: console
+    https://httpbin.org/status/200:
+        name: API Health Check
+        url: https://httpbin.org/status/200
+        method: GET
+        headers: {}
+        threshold: 30
+        statuscodes:
+            - '*'
+        checkstrategy: http
+        alertstrategy: console
+    https://httpbin.org/status/201:
+        name: Monitor-https://httpbin.org/status/201
+        url: https://httpbin.org/status/201
+        method: GET
+        headers: {}
+        threshold: 25
+        statuscodes:
+            - '*'
+        checkstrategy: http
+        alertstrategy: console
+settings:
+    webhook_port: 8080
+    webhook_path: /webhook
+    check_interval: 5
+    default_threshold: 30

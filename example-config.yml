@@ -1,0 +1,47 @@
+version: "1.0"
+created: 2025-01-10T10:00:00Z
+updated: 2025-01-10T10:00:00Z
+
+monitors:
+  api-health:
+    name: "API Health"
+    url: "https://httpbin.org/status/200"
+    method: "GET"
+    headers:
+      User-Agent: "QuickWatch/1.0"
+    threshold: 30
+    check_strategy: "http"
+    alert_strategy: "console"
+    
+  test-service:
+    name: "Test Service"
+    url: "https://httpbin.org/delay/1"
+    method: "GET"
+    threshold: 60
+    check_strategy: "http"
+    alert_strategy: "console"
+
+settings:
+  webhook_port: 8080
+  webhook_path: "/webhook"
+  check_interval: 5
+  default_threshold: 30
+
+strategies:
+  check:
+    http:
+      timeout: 10
+      follow_redirects: true
+      
+  alert:
+    console:
+      format: "detailed"
+    slack:
+      webhook_url: "https://hooks.slack.com/services/..."
+      channel: "#alerts"
+    email:
+      smtp_host: "smtp.gmail.com"
+      smtp_port: 587
+      username: "alerts@example.com"
+      password: "password"
+      to: "admin@example.com"
