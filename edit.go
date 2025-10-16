@@ -7,10 +7,62 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	qc "github.com/bevelwork/quick_color"
 	"gopkg.in/yaml.v3"
 )
+
+// DisplayLine represents one guidance line with indentation and an optional descriptor.
+type DisplayLine struct {
+	Indent      int
+	Content     string
+	Descriptors string
+}
+
+// display formats a block of guidance lines, aligning descriptors to a dynamic column
+// equal to the longest content line width + 1.
+func display(lines []DisplayLine) []string {
+	// Build left parts and compute max width
+	lefts := make([]string, len(lines))
+	descs := make([]string, len(lines))
+	maxLen := 0
+	for i, l := range lines {
+		if l.Indent < 0 {
+			l.Indent = 0
+		}
+		left := "# " + strings.Repeat(" ", l.Indent) + l.Content
+		lefts[i] = left
+		d := strings.TrimSpace(l.Descriptors)
+		descs[i] = d
+		if n := utf8.RuneCountInString(left); n > maxLen {
+			maxLen = n
+		}
+	}
+
+	maxCeil := 38
+	if maxLen > maxCeil {
+		maxLen = maxCeil
+	}
+
+	// Compose final lines
+	out := make([]string, 0, len(lines))
+	for i := range lines {
+		left := lefts[i]
+		d := descs[i]
+		if d == "" {
+			out = append(out, left)
+			continue
+		}
+		currentLen := utf8.RuneCountInString(left)
+		padding := (maxLen - currentLen) + 1
+		if padding < 1 {
+			padding = 1
+		}
+		out = append(out, left+strings.Repeat(" ", padding)+d)
+	}
+	return out
+}
 
 // handleEditTargets opens the state file in the user's editor for modification
 func handleEditTargets(stateFile string) {
@@ -407,64 +459,63 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 // addEditComments adds helpful comments to the YAML for editing
 func addEditComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
-	commentedLines := []string{
-		"# To remove a target: delete its entry",
-		"# To modify a target: edit its properties",
-		"# To add a target: add an object to the list.",
-		"# __Required fields__: name, url",
-		"# Alert alerts: [console, slack]",
-		"#",
-		"# Full example with all options:",
-		"#   my-full-config:",
-		"#     name: \"Comprehensive Target\"",
-		"#     url: \"https://api.example.com/health\"",
-		"#     method: \"GET\"                    # HTTP method (default: GET)",
-		"#     headers:                          # Custom headers (default: {})",
-		"#       Authorization: \"Bearer token\"",
-		"#       User-Agent: \"QuickWatch/1.0\"",
-		"#     threshold: 60                     # Down threshold in seconds (default: 30s)",
-		"#     status_codes: [\"200\", \"201\"]    # Acceptable status codes (default: [\"*\"])",
-		"#     size_alerts:                      # Page size change detection (default: disabled)",
-		"#       enabled: true",
-		"#       history_size: 100",
-		"#       threshold: 0.5",
-		"#     check_strategy: \"http\"    # Check strategy",
-		"#     alerts: [\"console\"        # Alert strategy",
-		"",
-	}
-
-	commentedLines = append(commentedLines, lines...)
+	rendered := display([]DisplayLine{
+		{0, "To remove a target: delete its entry", ""},
+		{0, "To modify a target: edit its properties", ""},
+		{0, "To add a target: add an object to the list.", ""},
+		{0, "__Required fields__: name, url", ""},
+		{0, "Alert alerts: [console, slack]", ""},
+		{0, "", ""},
+		{0, "Full example with all options:", ""},
+		{2, "my-full-config:", ""},
+		{4, "name: \"Comprehensive Target\"", ""},
+		{4, "url: \"https://api.example.com/health\"", ""},
+		{4, "method: \"GET\"", "# HTTP method (default: GET)"},
+		{4, "headers:", "# Custom headers (default: {})"},
+		{6, "Authorization: \"Bearer token\"", ""},
+		{6, "User-Agent: \"QuickWatch/1.0\"", ""},
+		{4, "threshold: 60", "# Down threshold in seconds (default: 30s)"},
+		{4, "status_codes: [\"200\", \"201\"]", "# Acceptable status codes (default: [\"*\"])"},
+		{4, "size_alerts:", "# Page size change detection (default: disabled)"},
+		{6, "enabled: true", ""},
+		{6, "history_size: 100", ""},
+		{6, "threshold: 0.5", ""},
+		{4, "check_strategy: \"http\"", "# Check strategy"},
+		{4, "alerts: [\"console\"]", "# Alert strategy"},
+		{0, "", ""},
+	})
+	commentedLines := append(rendered, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
 // addEditCommentsForSimplified adds comments for the simplified targets editor
 func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte {
 	lines := strings.Split(string(data), "\n")
-	alertsComment := "#   alerts: [console]"
+	alertsDesc := ""
 	if len(availableAlerts) > 0 {
-		alertsComment = "#   alerts: [console]          # [" + strings.Join(availableAlerts, "|") + "]"
+		alertsDesc = "# [" + strings.Join(availableAlerts, "|") + "]"
 	}
-	commentedLines := []string{
-		"# Edit targets below. Each key is the target name.",
-		"# Only 'url' is required. Other fields are optional and have defaults.",
-		"#",
-		"# Full example (defaults shown; omit to use defaults):",
-		"# my-target:",
-		"#   url: https://bevel.work              # REQUIRED",
-		"#   method: GET                          # default: GET",
-		"#   headers:                             # default: {} (none)",
-		"#     Authorization: Bearer <token>",
-		"#   threshold: 30                        # seconds; default: 30",
-		"#   status_codes: ['*']                 # accepts any by default",
-		"#   size_alerts:                         # page size change alerts (enabled by default)",
-		"#     enabled: true",
-		"#     history_size: 100",
-		"#     threshold: 0.5                     # 50% change",
-		"#   check_strategy: http                 # default: http",
-		alertsComment,
-		"",
-	}
-	commentedLines = append(commentedLines, lines...)
+	rendered := display([]DisplayLine{
+		{0, "Edit targets below. Each key is the target name.", ""},
+		{0, "Only 'url' is required. Other fields are optional and have defaults.", ""},
+		{0, "", ""},
+		{0, "Full example (defaults shown; omit to use defaults):", ""},
+		{0, "my-target:", ""},
+		{2, "url: https://bevel.work", "# REQUIRED"},
+		{2, "method: GET", "# default: GET"},
+		{2, "headers:", "# default: {} (none)"},
+		{4, "Authorization: Bearer <token>", ""},
+		{2, "threshold: 30", "# seconds; default: 30"},
+		{2, "status_codes: ['*']", "# accepts any by default"},
+		{2, "size_alerts:", "# page size change alerts (enabled by default)"},
+		{4, "enabled: true", ""},
+		{4, "history_size: 100", ""},
+		{4, "threshold: 0.5", "# 50% change"},
+		{2, "check_strategy: http", "# default: http"},
+		{2, "alerts: [console]", alertsDesc},
+		{0, "", ""},
+	})
+	commentedLines := append(rendered, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
@@ -737,23 +788,23 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 // addSettingsComments adds helpful comments to the settings YAML for editing
 func addSettingsComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
-	commentedLines := []string{
-		"# Quick Watch Global Settings",
-		"# Edit the settings below",
-		"#",
-		"# webhook_port: Port for webhook server (default: 8080)",
-		"# webhook_path: Path for webhook endpoint (default: /webhook)",
-		"# check_interval: How often to check targets in seconds (default: 5s)",
-		"# default_threshold: Default down threshold in seconds (default: 30s)",
-		"# startup:",
-		"#   enabled: true/false (default: true)",
-		"#   alerts: [\"console\", \"slack-alerts\"] (default: [\"console\"])",
-		"#   check_all_targets: true/false (default: false)",
-		"#",
-		"",
-	}
+	rendered := display([]DisplayLine{
+		{0, "Quick Watch Global Settings", ""},
+		{0, "Edit the settings below", ""},
+		{0, "", ""},
+		{0, "webhook_port: Port for webhook server", "(default: 8080)"},
+		{0, "webhook_path: Path for webhook endpoint", "(default: /webhook)"},
+		{0, "check_interval: How often to check targets in seconds", "(default: 5s)"},
+		{0, "default_threshold: Default down threshold in seconds", "(default: 30s)"},
+		{0, "startup:", ""},
+		{2, "enabled: true/false", "(default: true)"},
+		{2, "alerts: [\"console\", \"slack-alerts\"]", "(default: [\"console\"])"},
+		{2, "check_all_targets: true/false", "(default: false)"},
+		{0, "", ""},
+		{0, "", ""},
+	})
+	commentedLines := append(rendered, lines...)
 
-	commentedLines = append(commentedLines, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
@@ -950,33 +1001,33 @@ func createTempAlertsFile(stateManager *StateManager) (string, error) {
 // addAlertsComments adds helpful comments to the alerts YAML for editing
 func addAlertsComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
-	commentedLines := []string{
-		"# Edit alerts below. Each key is the alert name.",
-		"# For console, only 'type: console' is required.",
-		"# For slack, 'type: slack' and 'settings.webhook_url' are required.",
-		"#",
-		"# Full examples:",
-		"# my-console-alert:",
-		"#   type: console",
-		"#   enabled: true",
-		"#   description: \"Console output\"",
-		"#   settings:",
-		"#     style: stylized",
-		"#     color: true",
-		"#",
-		"# my-slack-alert:",
-		"#   type: slack",
-		"#   enabled: true",
-		"#   description: \"Slack alerts channel\"",
-		"#   settings:",
-		"#     webhook_url: \"https://hooks.slack.com/services/...\"",
-		"#     channel: \"#alerts\"",
-		"#     username: \"QuickWatch\"",
-		"#     icon_emoji: \":robot_face:\"",
-		"#",
-		"",
-	}
-	commentedLines = append(commentedLines, lines...)
+	rendered := display([]DisplayLine{
+		{0, "Edit alerts below. Each key is the alert name.", ""},
+		{0, "For console, only 'type: console' is required.", ""},
+		{0, "For slack, 'type: slack' and 'settings.webhook_url' are required.", ""},
+		{0, "", ""},
+		{0, "Full examples:", ""},
+		{0, "my-console-alert:", ""},
+		{2, "type: console", ""},
+		{2, "enabled: true", ""},
+		{2, "description: \"Console output\"", ""},
+		{2, "settings:", ""},
+		{4, "style: stylized", ""},
+		{4, "color: true", ""},
+		{0, "", ""},
+		{0, "my-slack-alert:", ""},
+		{2, "type: slack", ""},
+		{2, "enabled: true", ""},
+		{2, "description: \"Slack alerts channel\"", ""},
+		{2, "settings:", ""},
+		{4, "webhook_url: \"https://hooks.slack.com/services/...\"", ""},
+		{4, "channel: \"#alerts\"", ""},
+		{4, "username: \"QuickWatch\"", ""},
+		{4, "icon_emoji: \":robot_face:\"", ""},
+		{0, "", ""},
+		{0, "", ""},
+	})
+	commentedLines := append(rendered, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
