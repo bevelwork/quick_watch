@@ -13,7 +13,7 @@ type Monitor struct {
 	URL           string            `json:"url" yaml:"url"`
 	Method        string            `json:"method" yaml:"method,omitempty"`
 	Headers       map[string]string `json:"headers" yaml:"headers,omitempty"`
-	Threshold     int               `json:"threshold" yaml:"threshold,omitempty"`       // seconds
+	Threshold     int               `json:"threshold" yaml:"threshold,omitempty"`       // seconds (default: 30s)
 	StatusCodes   []string          `json:"status_codes" yaml:"status_codes,omitempty"` // List of acceptable status codes (e.g., ["2**", "302"])
 	SizeAlerts    SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
 	CheckStrategy string            `json:"check_strategy" yaml:"check_strategy,omitempty"`

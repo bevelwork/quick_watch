@@ -11,7 +11,7 @@ monitors:
     name: "My API Service"
     url: "https://api.example.com/health"
     method: "GET"
-    threshold: 30
+    threshold: 30  # seconds (30s)
     check_strategy: "http"
     alert_strategy: "console"
   
@@ -19,7 +19,7 @@ monitors:
     name: "My Website"
     url: "https://example.com"
     method: "GET"
-    threshold: 60
+    threshold: 60  # seconds (60s)
     check_strategy: "http"
     alert_strategy: "slack-alerts"
 

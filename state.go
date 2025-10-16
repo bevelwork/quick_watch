@@ -31,8 +31,8 @@ type WatchState struct {
 type ServerSettings struct {
 	WebhookPort      int           `yaml:"webhook_port"`
 	WebhookPath      string        `yaml:"webhook_path"`
-	CheckInterval    int           `yaml:"check_interval"`    // seconds
-	DefaultThreshold int           `yaml:"default_threshold"` // seconds
+	CheckInterval    int           `yaml:"check_interval"`    // seconds (default: 5s)
+	DefaultThreshold int           `yaml:"default_threshold"` // seconds (default: 30s)
 	Startup          StartupConfig `yaml:"startup"`           // startup message configuration
 }
 
