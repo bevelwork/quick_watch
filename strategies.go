@@ -294,7 +294,7 @@ func NewWebhookAlertStrategy(webhookURL string) *WebhookAlertStrategy {
 func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
 	payload := map[string]interface{}{
 		"type":          "alert",
-		"target":       target.Name,
+		"target":        target.Name,
 		"url":           target.URL,
 		"status":        "down",
 		"timestamp":     result.Timestamp,
@@ -309,7 +309,7 @@ func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, re
 func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
 	payload := map[string]interface{}{
 		"type":          "all_clear",
-		"target":       target.Name,
+		"target":        target.Name,
 		"url":           target.URL,
 		"status":        "up",
 		"timestamp":     result.Timestamp,
@@ -477,13 +477,13 @@ func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[s
 func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version string, targetCount int) error {
 	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Targets: %d\n• Timestamp: %s",
 		version, targetCount, time.Now().Format("2006-01-02 15:04:05"))
-	
+
 	payload := map[string]interface{}{
-		"text": message,
+		"text":   message,
 		"mrkdwn": true,
 		"attachments": []map[string]interface{}{
 			{
-				"color": "good",
+				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
 				"fields": []map[string]interface{}{
 					{
@@ -508,8 +508,8 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 					},
 					{
 						"title": "Startup Time",
-						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>", 
-							time.Now().Unix(), 
+						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>",
+							time.Now().Unix(),
 							time.Now().Format("2006-01-02 15:04:05")),
 						"short": false,
 					},
@@ -517,7 +517,7 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 			},
 		},
 	}
-	
+
 	return s.sendSlackWebhook(ctx, payload)
 }
 

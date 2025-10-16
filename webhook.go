@@ -120,7 +120,7 @@ func (w *WebhookServer) handleStatus(wr http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
-		"targets":  make([]map[string]interface{}, len(targets)),
+		"targets":   make([]map[string]interface{}, len(targets)),
 	}
 
 	targetList := status["targets"].([]map[string]interface{})

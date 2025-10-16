@@ -7,7 +7,7 @@ import (
 // YAMLConfig represents the YAML configuration structure
 type YAMLConfig struct {
 	Version    string                 `yaml:"version,omitempty"`
-	Targets   map[string]Target     `yaml:"targets"`
+	Targets    map[string]Target      `yaml:"targets"`
 	Settings   ServerSettings         `yaml:"settings,omitempty"`
 	Strategies map[string]interface{} `yaml:"strategies,omitempty"`
 }
@@ -40,8 +40,8 @@ func LoadYAMLConfig(data []byte) (*TargetConfig, error) {
 	// Backward compatibility: if no targets, try legacy targets key
 	if len(yamlConfig.Targets) == 0 {
 		var legacy struct {
-			Targets map[string]Target `yaml:"targets"`
-			Settings ServerSettings     `yaml:"settings,omitempty"`
+			Targets  map[string]Target `yaml:"targets"`
+			Settings ServerSettings    `yaml:"settings,omitempty"`
 		}
 		if err := yaml.Unmarshal(data, &legacy); err == nil {
 			if len(legacy.Targets) > 0 {
