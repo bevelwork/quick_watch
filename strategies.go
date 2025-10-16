@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -329,6 +331,199 @@ func (w *WebhookAlertStrategy) sendWebhook(ctx context.Context, payload map[stri
 // Name returns the strategy name
 func (w *WebhookAlertStrategy) Name() string {
 	return "webhook"
+}
+
+// SlackAlertStrategy implements Slack-based alerting
+type SlackAlertStrategy struct {
+	webhookURL string
+	client     *http.Client
+}
+
+// NewSlackAlertStrategy creates a new Slack alert strategy
+func NewSlackAlertStrategy(webhookURL string) *SlackAlertStrategy {
+	return &SlackAlertStrategy{
+		webhookURL: webhookURL,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
+// SendAlert sends an alert to Slack
+func (s *SlackAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
+		monitor.Name, monitor.URL, result.StatusCode, result.ResponseTime, result.Error)
+
+	payload := map[string]interface{}{
+		"text":   message,
+		"mrkdwn": true,
+		"attachments": []map[string]interface{}{
+			{
+				"color":     "danger",
+				"mrkdwn_in": []string{"fields"},
+				"fields": []map[string]interface{}{
+					{
+						"title": "Monitor",
+						"value": fmt.Sprintf("*%s*", monitor.Name),
+						"short": true,
+					},
+					{
+						"title": "URL",
+						"value": fmt.Sprintf("<%s|%s>", monitor.URL, monitor.URL),
+						"short": true,
+					},
+					{
+						"title": "Status Code",
+						"value": fmt.Sprintf("`%d`", result.StatusCode),
+						"short": true,
+					},
+					{
+						"title": "Response Time",
+						"value": fmt.Sprintf("`%s`", result.ResponseTime.String()),
+						"short": true,
+					},
+					{
+						"title": "Timestamp",
+						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>",
+							result.Timestamp.Unix(),
+							result.Timestamp.Format("2006-01-02 15:04:05")),
+						"short": false,
+					},
+				},
+			},
+		},
+	}
+
+	return s.sendSlackWebhook(ctx, payload)
+}
+
+// SendAllClear sends an all-clear notification to Slack
+func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+	message := fmt.Sprintf("✅ *%s* is UP\n• URL: %s\n• Status: %d\n• Time: %v",
+		monitor.Name, monitor.URL, result.StatusCode, result.ResponseTime)
+
+	payload := map[string]interface{}{
+		"text":   message,
+		"mrkdwn": true,
+		"attachments": []map[string]interface{}{
+			{
+				"color":     "good",
+				"mrkdwn_in": []string{"fields"},
+				"fields": []map[string]interface{}{
+					{
+						"title": "Monitor",
+						"value": fmt.Sprintf("*%s*", monitor.Name),
+						"short": true,
+					},
+					{
+						"title": "URL",
+						"value": fmt.Sprintf("<%s|%s>", monitor.URL, monitor.URL),
+						"short": true,
+					},
+					{
+						"title": "Status Code",
+						"value": fmt.Sprintf("`%d`", result.StatusCode),
+						"short": true,
+					},
+					{
+						"title": "Response Time",
+						"value": fmt.Sprintf("`%s`", result.ResponseTime.String()),
+						"short": true,
+					},
+					{
+						"title": "Timestamp",
+						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>",
+							result.Timestamp.Unix(),
+							result.Timestamp.Format("2006-01-02 15:04:05")),
+						"short": false,
+					},
+				},
+			},
+		},
+	}
+
+	return s.sendSlackWebhook(ctx, payload)
+}
+
+// sendSlackWebhook sends a notification to Slack
+func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Slack payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.webhookURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create Slack request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send Slack webhook: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Slack webhook returned status %d", resp.StatusCode)
+	}
+
+	fmt.Printf("📡 SLACK: Sent notification to %s\n", s.webhookURL)
+	return nil
+}
+
+// SendStartupMessage sends a startup notification to Slack
+func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version string, monitorCount int) error {
+	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Monitors: %d\n• Timestamp: %s",
+		version, monitorCount, time.Now().Format("2006-01-02 15:04:05"))
+	
+	payload := map[string]interface{}{
+		"text": message,
+		"mrkdwn": true,
+		"attachments": []map[string]interface{}{
+			{
+				"color": "good",
+				"mrkdwn_in": []string{"fields"},
+				"fields": []map[string]interface{}{
+					{
+						"title": "Service",
+						"value": "*Quick Watch*",
+						"short": true,
+					},
+					{
+						"title": "Version",
+						"value": fmt.Sprintf("`%s`", version),
+						"short": true,
+					},
+					{
+						"title": "Monitors",
+						"value": fmt.Sprintf("`%d`", monitorCount),
+						"short": true,
+					},
+					{
+						"title": "Status",
+						"value": "*Running*",
+						"short": true,
+					},
+					{
+						"title": "Startup Time",
+						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>", 
+							time.Now().Unix(), 
+							time.Now().Format("2006-01-02 15:04:05")),
+						"short": false,
+					},
+				},
+			},
+		},
+	}
+	
+	return s.sendSlackWebhook(ctx, payload)
+}
+
+// Name returns the strategy name
+func (s *SlackAlertStrategy) Name() string {
+	return "slack"
 }
 
 // ConsoleNotificationStrategy implements console-based notification handling

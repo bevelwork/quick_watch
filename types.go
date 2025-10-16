@@ -47,6 +47,29 @@ type StrategyConfig struct {
 	Notification map[string]json.RawMessage `json:"notification,omitempty"`
 }
 
+// NotifierConfig represents a notification configuration
+type NotifierConfig struct {
+	Name        string                 `json:"name" yaml:"name"`
+	Type        string                 `json:"type" yaml:"type"` // "console" or "slack"
+	Enabled     bool                   `json:"enabled" yaml:"enabled"`
+	Settings    map[string]interface{} `json:"settings" yaml:"settings"`
+	Description string                 `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// ConsoleNotifierSettings represents console notifier settings
+type ConsoleNotifierSettings struct {
+	Style string `json:"style" yaml:"style"` // "plain" or "stylized"
+	Color bool   `json:"color" yaml:"color"` // enable/disable colors
+}
+
+// SlackNotifierSettings represents Slack notifier settings
+type SlackNotifierSettings struct {
+	WebhookURL string `json:"webhook_url" yaml:"webhook_url"`
+	Channel    string `json:"channel,omitempty" yaml:"channel,omitempty"`
+	Username   string `json:"username,omitempty" yaml:"username,omitempty"`
+	IconEmoji  string `json:"icon_emoji,omitempty" yaml:"icon_emoji,omitempty"`
+}
+
 // WebhookNotification represents an incoming webhook notification
 type WebhookNotification struct {
 	Type      string                 `json:"type"`
@@ -77,7 +100,7 @@ type MonitoringEngine struct {
 }
 
 // NewMonitoringEngine creates a new monitoring engine
-func NewMonitoringEngine(config *MonitorConfig) *MonitoringEngine {
+func NewMonitoringEngine(config *MonitorConfig, stateManager *StateManager) *MonitoringEngine {
 	engine := &MonitoringEngine{
 		config:                 config,
 		checkStrategies:        make(map[string]CheckStrategy),
@@ -86,7 +109,7 @@ func NewMonitoringEngine(config *MonitorConfig) *MonitoringEngine {
 	}
 
 	// Register default strategies
-	engine.registerDefaultStrategies()
+	engine.registerDefaultStrategies(stateManager)
 
 	// Initialize monitors
 	engine.initializeMonitors()
@@ -95,12 +118,44 @@ func NewMonitoringEngine(config *MonitorConfig) *MonitoringEngine {
 }
 
 // registerDefaultStrategies registers the default strategies
-func (e *MonitoringEngine) registerDefaultStrategies() {
+func (e *MonitoringEngine) registerDefaultStrategies(stateManager *StateManager) {
 	// Check strategies
 	e.checkStrategies["http"] = NewHTTPCheckStrategy()
 
-	// Alert strategies
+	// Alert strategies - register default console
 	e.alertStrategies["console"] = NewConsoleAlertStrategy()
+
+	// Register notifier-based strategies if stateManager is provided
+	if stateManager != nil {
+		notifiers := stateManager.GetNotifiers()
+		for name, notifier := range notifiers {
+			if notifier.Enabled {
+				switch notifier.Type {
+				case "slack":
+					if webhookURL, ok := notifier.Settings["webhook_url"].(string); ok && webhookURL != "" {
+						e.alertStrategies[name] = NewSlackAlertStrategy(webhookURL)
+					}
+				case "console":
+					// Console is already registered as default
+					if name != "console" {
+						e.alertStrategies[name] = NewConsoleAlertStrategy()
+					}
+				}
+			}
+		}
+	}
+
+	// Legacy Slack strategy registration for backward compatibility
+	if e.config.Strategies.Alert != nil {
+		if slackConfig, exists := e.config.Strategies.Alert["slack"]; exists {
+			var slackData map[string]interface{}
+			if err := json.Unmarshal(slackConfig, &slackData); err == nil {
+				if webhookURL, ok := slackData["webhook_url"].(string); ok && webhookURL != "" {
+					e.alertStrategies["slack"] = NewSlackAlertStrategy(webhookURL)
+				}
+			}
+		}
+	}
 
 	// Notification strategies
 	e.notificationStrategies["console"] = NewConsoleNotificationStrategy()

@@ -1,0 +1,92 @@
+# Quick Watch - Git Ignore File
+# Excludes files that may contain private information
+
+# State files (contain monitor configurations and sensitive data)
+watch-state.yml
+*.state.yml
+*.state.yaml
+
+# Configuration files (may contain private URLs, webhooks, etc.)
+config.yml
+config.yaml
+*-config.yml
+*-config.yaml
+!example-config.yml
+!example-config.yaml
+
+# Test configuration files (may contain test data)
+test-*.yml
+test-*.yaml
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+temp/
+
+# Editor backup files
+*~
+*.swp
+*.swo
+.#*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Build artifacts
+quick_watch
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Coverage reports
+*.out
+coverage/
+
+# Dependencies (if using vendor)
+vendor/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Private keys and certificates
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Runtime files
+*.pid
+*.sock
+
+# Privacy check script output (if any)
+privacy-check.log

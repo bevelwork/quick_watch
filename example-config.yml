@@ -1,47 +1,67 @@
+# Quick Watch Example Configuration
+# This file shows the structure of a Quick Watch configuration
+# Replace with your actual URLs, webhooks, and settings
+
 version: "1.0"
 created: 2025-01-10T10:00:00Z
 updated: 2025-01-10T10:00:00Z
 
 monitors:
-  api-health:
-    name: "API Health"
-    url: "https://httpbin.org/status/200"
+  my-api:
+    name: "My API Service"
+    url: "https://api.example.com/health"
     method: "GET"
-    headers:
-      User-Agent: "QuickWatch/1.0"
     threshold: 30
     check_strategy: "http"
     alert_strategy: "console"
-    
-  test-service:
-    name: "Test Service"
-    url: "https://httpbin.org/delay/1"
+  
+  my-website:
+    name: "My Website"
+    url: "https://example.com"
     method: "GET"
     threshold: 60
     check_strategy: "http"
-    alert_strategy: "console"
+    alert_strategy: "slack-alerts"
+
+notifiers:
+  console:
+    name: "console"
+    type: "console"
+    enabled: true
+    description: "Default console output"
+    settings:
+      style: "stylized"
+      color: true
+  
+  slack-alerts:
+    name: "slack-alerts"
+    type: "slack"
+    enabled: true
+    description: "Slack alerts channel"
+    settings:
+      webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+      channel: "#alerts"
+      username: "QuickWatch"
+      icon_emoji: ":robot_face:"
+  
+  slack-dev:
+    name: "slack-dev"
+    type: "slack"
+    enabled: true
+    description: "Slack dev team channel"
+    settings:
+      webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+      channel: "#dev"
+      username: "QuickWatch-Dev"
+      icon_emoji: ":gear:"
 
 settings:
   webhook_port: 8080
   webhook_path: "/webhook"
   check_interval: 5
   default_threshold: 30
-
-strategies:
-  check:
-    http:
-      timeout: 10
-      follow_redirects: true
-      
-  alert:
-    console:
-      format: "detailed"
-    slack:
-      webhook_url: "https://hooks.slack.com/services/..."
-      channel: "#alerts"
-    email:
-      smtp_host: "smtp.gmail.com"
-      smtp_port: 587
-      username: "alerts@example.com"
-      password: "password"
-      to: "admin@example.com"
+  startup:
+    enabled: true
+    notifiers:
+      - console
+      - slack-alerts

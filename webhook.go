@@ -105,6 +105,7 @@ func (w *WebhookServer) handleHealth(wr http.ResponseWriter, r *http.Request) {
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
+		"version":   resolveVersion(),
 	}
 
 	json.NewEncoder(wr).Encode(response)

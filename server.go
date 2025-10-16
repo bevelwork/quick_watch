@@ -12,11 +12,11 @@ import (
 
 // Server represents the quick_watch server
 type Server struct {
-	stateManager *StateManager
-	engine       *MonitoringEngine
+	stateManager  *StateManager
+	engine        *MonitoringEngine
 	webhookServer *WebhookServer
-	server       *http.Server
-	state        string // "stopped", "starting", "running", "stopping"
+	server        *http.Server
+	state         string // "stopped", "starting", "running", "stopping"
 }
 
 // NewServer creates a new quick_watch server
@@ -24,14 +24,14 @@ func NewServer(stateFile string) *Server {
 	stateManager := NewStateManager(stateFile)
 	return &Server{
 		stateManager: stateManager,
-		state:       "stopped",
+		state:        "stopped",
 	}
 }
 
 // Start starts the server
 func (s *Server) Start(ctx context.Context) error {
 	s.state = "starting"
-	
+
 	// Load state
 	if err := s.stateManager.Load(); err != nil {
 		return fmt.Errorf("failed to load state: %v", err)
@@ -39,15 +39,20 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Create monitoring engine
 	config := s.stateManager.GetMonitorConfig()
-	s.engine = NewMonitoringEngine(config)
+	s.engine = NewMonitoringEngine(config, s.stateManager)
 
 	// Start monitoring
 	if err := s.engine.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start monitoring engine: %v", err)
 	}
 
-	// Start webhook server if configured
+	// Send startup message if enabled and configured
 	settings := s.stateManager.GetSettings()
+	if settings.Startup.Enabled {
+		s.sendStartupMessage(ctx)
+	}
+
+	// Start webhook server if configured
 	if settings.WebhookPort > 0 {
 		s.webhookServer = NewWebhookServer(settings.WebhookPort, settings.WebhookPath, s.engine)
 		if err := s.webhookServer.Start(ctx); err != nil {
@@ -57,18 +62,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Set up HTTP server for API
 	mux := http.NewServeMux()
-	
+
 	// API endpoints
 	mux.HandleFunc("/api/monitors", s.handleMonitors)
 	mux.HandleFunc("/api/monitors/", s.handleMonitorByURL)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/settings", s.handleSettings)
-	
+
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/info", s.handleInfo)
-	
+
 	// Root endpoint
 	mux.HandleFunc("/", s.handleRoot)
 
@@ -78,7 +83,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.state = "running"
-	
+
 	// Start server in goroutine
 	go func() {
 		log.Printf("Starting quick_watch server on port 8080")
@@ -93,19 +98,19 @@ func (s *Server) Start(ctx context.Context) error {
 // Stop stops the server
 func (s *Server) Stop(ctx context.Context) error {
 	s.state = "stopping"
-	
+
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
 			return err
 		}
 	}
-	
+
 	if s.webhookServer != nil {
 		if err := s.webhookServer.Stop(ctx); err != nil {
 			return err
 		}
 	}
-	
+
 	s.state = "stopped"
 	return nil
 }
@@ -114,7 +119,7 @@ func (s *Server) Stop(ctx context.Context) error {
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	
+
 	html := `
 <!DOCTYPE html>
 <html>
@@ -151,7 +156,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
     </div>
 </body>
 </html>`
-	
+
 	w.Write([]byte(html))
 }
 
@@ -159,14 +164,15 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	response := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
+		"version":   resolveVersion(),
 		"state":     s.state,
 	}
-	
+
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -174,11 +180,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	info := s.stateManager.GetStateInfo()
 	info["state"] = s.state
 	info["timestamp"] = time.Now()
-	
+
 	json.NewEncoder(w).Encode(info)
 }
 
@@ -186,7 +192,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	monitors := s.engine.GetMonitorStatus()
 	status := map[string]interface{}{
 		"timestamp": time.Now(),
@@ -194,7 +200,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"state":     s.state,
 		"monitors":  make([]map[string]interface{}, len(monitors)),
 	}
-	
+
 	monitorList := status["monitors"].([]map[string]interface{})
 	for i, state := range monitors {
 		monitorList[i] = map[string]interface{}{
@@ -205,7 +211,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"last_check": state.LastCheck,
 		}
 	}
-	
+
 	json.NewEncoder(w).Encode(status)
 }
 
@@ -213,11 +219,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	state := s.stateManager.GetStateInfo()
 	state["server_state"] = s.state
 	state["timestamp"] = time.Now()
-	
+
 	json.NewEncoder(w).Encode(state)
 }
 
@@ -237,7 +243,7 @@ func (s *Server) handleMonitors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListMonitors(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	monitors := s.stateManager.ListMonitors()
 	json.NewEncoder(w).Encode(monitors)
 }
@@ -249,24 +255,24 @@ func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	if monitor.URL == "" {
 		http.Error(w, "URL is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := s.stateManager.AddMonitor(monitor); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to add monitor: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Restart monitoring engine with new configuration
 	config := s.stateManager.GetMonitorConfig()
-	s.engine = NewMonitoringEngine(config)
+	s.engine = NewMonitoringEngine(config, s.stateManager)
 	if err := s.engine.Start(r.Context()); err != nil {
 		log.Printf("Failed to restart monitoring engine: %v", err)
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "added", "url": monitor.URL})
@@ -280,10 +286,10 @@ func (s *Server) handleMonitorByURL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "URL parameter required", http.StatusBadRequest)
 		return
 	}
-	
+
 	// URL decode if needed
 	url := path
-	
+
 	switch r.Method {
 	case "GET":
 		monitor, exists := s.stateManager.GetMonitor(url)
@@ -293,24 +299,24 @@ func (s *Server) handleMonitorByURL(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(monitor)
-		
+
 	case "DELETE":
 		if err := s.stateManager.RemoveMonitor(url); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to remove monitor: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		// Restart monitoring engine with new configuration
 		config := s.stateManager.GetMonitorConfig()
-		s.engine = NewMonitoringEngine(config)
+		s.engine = NewMonitoringEngine(config, s.stateManager)
 		if err := s.engine.Start(r.Context()); err != nil {
 			log.Printf("Failed to restart monitoring engine: %v", err)
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "removed", "url": url})
-		
+
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -323,24 +329,55 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		settings := s.stateManager.GetSettings()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(settings)
-		
+
 	case "POST":
 		var settings ServerSettings
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-		
+
 		if err := s.stateManager.UpdateSettings(settings); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to update settings: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
-		
+
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// sendStartupMessage sends startup notifications to configured notifiers
+func (s *Server) sendStartupMessage(ctx context.Context) {
+	settings := s.stateManager.GetSettings()
+
+	// Check if startup messages are enabled
+	if !settings.Startup.Enabled {
+		return
+	}
+
+	monitorCount := len(s.engine.monitors)
+	version := resolveVersion()
+
+	// Send startup message to each configured notifier
+	for _, notifierName := range settings.Startup.Notifiers {
+		if alertStrategy, exists := s.engine.alertStrategies[notifierName]; exists {
+			if slack, ok := alertStrategy.(*SlackAlertStrategy); ok {
+				if err := slack.SendStartupMessage(ctx, version, monitorCount); err != nil {
+					log.Printf("Failed to send startup message to %s: %v", notifierName, err)
+				} else {
+					log.Printf("Startup message sent to %s successfully", notifierName)
+				}
+			} else if _, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
+				// For console notifiers, we can just log the startup message
+				log.Printf("🚀 Quick Watch started - Version: %s, Monitors: %d", version, monitorCount)
+			}
+		} else {
+			log.Printf("Warning: Startup notifier '%s' not found or not available", notifierName)
+		}
 	}
 }

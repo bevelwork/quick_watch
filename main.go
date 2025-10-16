@@ -65,6 +65,12 @@ func main() {
 	switch action {
 	case "edit":
 		handleEditCommand(args)
+	case "settings":
+		handleSettingsCommand(args)
+	case "notifiers":
+		handleNotifiersCommand(args)
+	case "validate":
+		handleValidateCommand(args)
 	case "add":
 		handleAddCommand(args)
 	case "rm":
@@ -88,6 +94,9 @@ func showHelp() {
 	fmt.Printf("Usage: %s <action> [options]\n\n", os.Args[0])
 	fmt.Println("Actions:")
 	fmt.Println("  edit                    Edit monitors using $EDITOR")
+	fmt.Println("  settings                Edit global settings using $EDITOR")
+	fmt.Println("  notifiers               Edit notification configs using $EDITOR")
+	fmt.Println("  validate                Validate configuration syntax and alert strategies")
 	fmt.Println("  add <url>               Add a monitor")
 	fmt.Println("  rm <url>                Remove a monitor")
 	fmt.Println("  list                    List all monitors")
@@ -235,7 +244,7 @@ func handleConfigMode(configFile string, webhookPort int, webhookPath string) {
 	}
 
 	// Create monitoring engine
-	engine := NewMonitoringEngine(config)
+	engine := NewMonitoringEngine(config, nil)
 
 	// Start webhook server if requested
 	var webhookServer *WebhookServer
@@ -468,13 +477,7 @@ func applyDefaultsAfterClean(monitor *Monitor) {
 
 // printHeader prints the application header
 func printHeader() {
-	fmt.Printf("%s\n", qc.Colorize("╔══════════════════════════════════════════════════════════════╗", qc.ColorBlue))
-	fmt.Printf("%s %s %s\n",
-		qc.Colorize("║", qc.ColorBlue),
-		qc.Colorize("🚀 Quick Watch", qc.ColorCyan),
-		qc.Colorize("║", qc.ColorBlue))
-	fmt.Printf("%s\n", qc.Colorize("╚══════════════════════════════════════════════════════════════╝", qc.ColorBlue))
-	fmt.Printf("%s %s\n", qc.Colorize("Version:", qc.ColorYellow), qc.Colorize(resolveVersion(), qc.ColorWhite))
+	fmt.Printf("%s %s\n", qc.Colorize("🚀 Quick Watch", qc.ColorCyan), qc.Colorize(resolveVersion(), qc.ColorWhite))
 }
 
 // printMonitoringStatus prints the current monitoring status
@@ -673,5 +676,113 @@ func handleListMonitors(stateFile string) {
 		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
 			monitor.Method, monitor.Threshold, monitor.CheckStrategy, monitor.AlertStrategy)
 		i++
+	}
+}
+
+// handleSettingsCommand handles the settings command
+func handleSettingsCommand(args []string) {
+	// Parse command line arguments
+	stateFile := "watch-state.yml"
+
+	// Parse flags
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--state":
+			if i+1 < len(args) {
+				stateFile = args[i+1]
+				i++ // Skip next argument
+			} else {
+				fmt.Printf("%s --state requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
+				os.Exit(1)
+			}
+		default:
+			fmt.Printf("%s Unknown option: %s\n", qc.Colorize("❌ Error:", qc.ColorRed), args[i])
+			os.Exit(1)
+		}
+	}
+
+	// Create state manager
+	stateManager := NewStateManager(stateFile)
+	if err := stateManager.Load(); err != nil {
+		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		os.Exit(1)
+	}
+
+	// Edit settings
+	editSettings(stateManager)
+}
+
+// handleNotifiersCommand handles the notifiers command
+func handleNotifiersCommand(args []string) {
+	// Parse command line arguments
+	stateFile := "watch-state.yml"
+
+	// Parse flags
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--state":
+			if i+1 < len(args) {
+				stateFile = args[i+1]
+				i++ // Skip next argument
+			} else {
+				fmt.Printf("%s --state requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
+				os.Exit(1)
+			}
+		default:
+			fmt.Printf("%s Unknown option: %s\n", qc.Colorize("❌ Error:", qc.ColorRed), args[i])
+			os.Exit(1)
+		}
+	}
+
+	// Create state manager
+	stateManager := NewStateManager(stateFile)
+	if err := stateManager.Load(); err != nil {
+		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		os.Exit(1)
+	}
+
+	// Edit notifiers
+	editNotifiers(stateManager)
+}
+
+// handleValidateCommand handles the validate command
+func handleValidateCommand(args []string) {
+	// Parse command line arguments
+	stateFile := "watch-state.yml"
+	configFile := ""
+	verbose := false
+
+	// Parse flags
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--state":
+			if i+1 < len(args) {
+				stateFile = args[i+1]
+				i++ // Skip next argument
+			} else {
+				fmt.Printf("%s --state requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
+				os.Exit(1)
+			}
+		case "--config":
+			if i+1 < len(args) {
+				configFile = args[i+1]
+				i++ // Skip next argument
+			} else {
+				fmt.Printf("%s --config requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
+				os.Exit(1)
+			}
+		case "--verbose", "-v":
+			verbose = true
+		default:
+			fmt.Printf("%s Unknown option: %s\n", qc.Colorize("❌ Error:", qc.ColorRed), args[i])
+			os.Exit(1)
+		}
+	}
+
+	// Validate configuration
+	if configFile != "" {
+		validateConfigFile(configFile, verbose)
+	} else {
+		validateStateFile(stateFile, verbose)
 	}
 }

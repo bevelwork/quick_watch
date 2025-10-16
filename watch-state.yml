@@ -1,6 +1,6 @@
 version: "1.0"
 created: 2025-10-15T16:58:27.157109897-04:00
-updated: 2025-10-15T21:17:24.121958428-04:00
+updated: 2025-10-15T22:30:26.16928222-04:00
 monitors:
     https://httpbin.org/delay/1:
         name: Slow Service
@@ -14,7 +14,7 @@ monitors:
             history_size: 100
             threshold: 0.5
         check_strategy: http
-        alert_strategy: console
+        alert_strategy: slack-alerts
     https://httpbin.org/status/200:
         name: Monitor-https://httpbin.org/status/200
         url: https://httpbin.org/status/200
@@ -27,7 +27,7 @@ monitors:
             history_size: 100
             threshold: 0.5
         check_strategy: http
-        alert_strategy: console
+        alert_strategy: slack-alerts
     https://httpbin.org/status/201:
         name: Monitor-https://httpbin.org/status/201
         url: https://httpbin.org/status/201
@@ -40,7 +40,7 @@ monitors:
             history_size: 100
             threshold: 0.5
         check_strategy: http
-        alert_strategy: console
+        alert_strategy: slack-alerts
     https://httpbin.org/status/404:
         name: Monitor-https://httpbin.org/status/404
         url: https://httpbin.org/status/404
@@ -53,9 +53,33 @@ monitors:
             history_size: 100
             threshold: 0.5
         check_strategy: http
-        alert_strategy: console
+        alert_strategy: slack-alerts
 settings:
     webhook_port: 8080
     webhook_path: /webhook
     check_interval: 5
     default_threshold: 30
+    startup:
+        enabled: true
+        notifiers:
+            - console
+            - slack-alerts
+notifiers:
+    console:
+        name: console
+        type: console
+        enabled: true
+        settings:
+            color: true
+            style: stylized
+        description: Default console output
+    slack-alerts:
+        name: slack-alerts
+        type: slack
+        enabled: true
+        settings:
+            channel: '#robots'
+            icon_emoji: ':robot_face:'
+            username: QuickWatch
+            webhook_url: ""
+        description: Slack alerts channel

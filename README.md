@@ -15,6 +15,22 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 - **Color-Coded Output**: Visual feedback with status indicators
 - **Configurable**: JSON-based configuration for monitors and strategies
 
+## 🔒 Privacy and Security
+
+Quick Watch handles sensitive configuration data including:
+- Monitor URLs and endpoints
+- Slack webhook URLs and tokens
+- API keys and credentials
+- Internal service configurations
+
+**Important**: The `.gitignore` file is configured to exclude files that may contain private information:
+- State files (`watch-state.yml`, `*.state.yml`)
+- Configuration files (`config.yml`, `*-config.yml`)
+- Test files (`test-*.yml`)
+- Log files and temporary data
+
+Use `example-config.yml` as a template for your configuration, but never commit actual configuration files with real URLs, webhooks, or credentials.
+
 ## Quick Start
 
 ```bash

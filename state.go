@@ -19,19 +19,27 @@ type StateManager struct {
 
 // WatchState represents the complete state of the watch system
 type WatchState struct {
-	Version   string            `yaml:"version"`
-	Created   time.Time         `yaml:"created"`
-	Updated   time.Time         `yaml:"updated"`
-	Monitors  map[string]Monitor `yaml:"monitors"`
-	Settings  ServerSettings    `yaml:"settings"`
+	Version   string                    `yaml:"version"`
+	Created   time.Time                 `yaml:"created"`
+	Updated   time.Time                 `yaml:"updated"`
+	Monitors  map[string]Monitor        `yaml:"monitors"`
+	Settings  ServerSettings            `yaml:"settings"`
+	Notifiers map[string]NotifierConfig `yaml:"notifiers"`
 }
 
 // ServerSettings represents server configuration
 type ServerSettings struct {
-	WebhookPort int    `yaml:"webhook_port"`
-	WebhookPath string `yaml:"webhook_path"`
-	CheckInterval int  `yaml:"check_interval"` // seconds
-	DefaultThreshold int `yaml:"default_threshold"` // seconds
+	WebhookPort      int           `yaml:"webhook_port"`
+	WebhookPath      string        `yaml:"webhook_path"`
+	CheckInterval    int           `yaml:"check_interval"`    // seconds
+	DefaultThreshold int           `yaml:"default_threshold"` // seconds
+	Startup          StartupConfig `yaml:"startup"`           // startup message configuration
+}
+
+// StartupConfig represents startup message configuration
+type StartupConfig struct {
+	Enabled   bool     `yaml:"enabled"`   // enable startup messages
+	Notifiers []string `yaml:"notifiers"` // list of notifiers to use
 }
 
 // NewStateManager creates a new state manager
@@ -48,7 +56,12 @@ func NewStateManager(filePath string) *StateManager {
 				WebhookPath:      "/webhook",
 				CheckInterval:    5,
 				DefaultThreshold: 30,
+				Startup: StartupConfig{
+					Enabled:   true,
+					Notifiers: []string{"console"},
+				},
 			},
+			Notifiers: make(map[string]NotifierConfig),
 		},
 	}
 }
@@ -92,7 +105,7 @@ func (sm *StateManager) Save() error {
 // saveUnlocked saves the state without acquiring the lock (internal use)
 func (sm *StateManager) saveUnlocked() error {
 	sm.state.Updated = time.Now()
-	
+
 	data, err := yaml.Marshal(sm.state)
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %v", err)
@@ -116,7 +129,7 @@ func (sm *StateManager) AddMonitor(monitor Monitor) error {
 	if monitor.Name == "" {
 		monitor.Name = fmt.Sprintf("Monitor-%s", key)
 	}
-	
+
 	// Set defaults if not provided
 	if monitor.Method == "" {
 		monitor.Method = "GET"
@@ -215,10 +228,37 @@ func (sm *StateManager) GetStateInfo() map[string]interface{} {
 	defer sm.mutex.RUnlock()
 
 	return map[string]interface{}{
-		"version":   sm.state.Version,
-		"created":   sm.state.Created,
-		"updated":   sm.state.Updated,
-		"monitors":  len(sm.state.Monitors),
-		"settings":  sm.state.Settings,
+		"version":  sm.state.Version,
+		"created":  sm.state.Created,
+		"updated":  sm.state.Updated,
+		"monitors": len(sm.state.Monitors),
+		"settings": sm.state.Settings,
 	}
+}
+
+// GetNotifiers returns all notifiers
+func (sm *StateManager) GetNotifiers() map[string]NotifierConfig {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+	return sm.state.Notifiers
+}
+
+// UpdateNotifiers updates the notifiers configuration
+func (sm *StateManager) UpdateNotifiers(notifiers map[string]NotifierConfig) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	sm.state.Notifiers = notifiers
+	sm.state.Updated = time.Now()
+
+	return sm.saveUnlocked()
+}
+
+// GetNotifier returns a specific notifier by name
+func (sm *StateManager) GetNotifier(name string) (NotifierConfig, bool) {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+
+	notifier, exists := sm.state.Notifiers[name]
+	return notifier, exists
 }
