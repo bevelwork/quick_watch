@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -97,6 +98,41 @@ func isStatusCodeAllowed(statusCode int, allowedCodes []string) bool {
 	}
 
 	return false
+}
+
+// checkSizeChange detects significant changes in response size
+func checkSizeChange(state *MonitorState, newSize int64) bool {
+	if !state.Monitor.SizeAlerts.Enabled {
+		return false
+	}
+
+	// Add new size to history
+	state.SizeHistory = append(state.SizeHistory, newSize)
+
+	// Keep only the last N responses
+	historySize := state.Monitor.SizeAlerts.HistorySize
+	if len(state.SizeHistory) > historySize {
+		state.SizeHistory = state.SizeHistory[len(state.SizeHistory)-historySize:]
+	}
+
+	// Need at least 2 responses to detect change
+	if len(state.SizeHistory) < 2 {
+		return false
+	}
+
+	// Calculate average of previous responses (excluding the current one)
+	previousResponses := state.SizeHistory[:len(state.SizeHistory)-1]
+	var sum int64
+	for _, size := range previousResponses {
+		sum += size
+	}
+	avgSize := float64(sum) / float64(len(previousResponses))
+
+	// Calculate percentage change
+	change := math.Abs(float64(newSize)-avgSize) / avgSize
+
+	// Check if change exceeds threshold
+	return change >= state.Monitor.SizeAlerts.Threshold
 }
 
 // Check performs an HTTP health check
@@ -201,6 +237,32 @@ func (c *ConsoleAlertStrategy) SendAllClear(ctx context.Context, monitor *Monito
 	if result.ResponseSize > 0 {
 		fmt.Printf("   %s %d bytes\n", qc.Colorize("Response Size:", qc.ColorCyan), result.ResponseSize)
 	}
+	fmt.Println()
+	return nil
+}
+
+// SendSizeChangeAlert sends a size change alert to the console
+func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, monitor *Monitor, result *CheckResult, avgSize float64, changePercent float64) error {
+	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
+	changeDirection := "increased"
+	if float64(result.ResponseSize) < avgSize {
+		changeDirection = "decreased"
+	}
+
+	fmt.Printf("%s %s response size %s significantly - %s (Size: %d bytes, Avg: %.0f bytes, Change: %.1f%%)\n",
+		qc.Colorize("📏 SIZE ALERT:", qc.ColorYellow),
+		qc.Colorize(monitor.Name, qc.ColorYellow),
+		changeDirection,
+		monitor.URL,
+		result.ResponseSize,
+		avgSize,
+		changePercent*100)
+	fmt.Printf("   %s %s\n", qc.Colorize("Monitor:", qc.ColorCyan), monitor.Name)
+	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), monitor.URL)
+	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
+	fmt.Printf("   %s %d bytes\n", qc.Colorize("Current Size:", qc.ColorCyan), result.ResponseSize)
+	fmt.Printf("   %s %.0f bytes\n", qc.Colorize("Average Size:", qc.ColorCyan), avgSize)
+	fmt.Printf("   %s %.1f%%\n", qc.Colorize("Change:", qc.ColorCyan), changePercent*100)
 	fmt.Println()
 	return nil
 }

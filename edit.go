@@ -78,31 +78,143 @@ func handleEditMonitors(stateFile string) {
 		return
 	}
 
-	// Parse the modified configuration
-	var yamlConfig YAMLConfig
-	if err := yaml.Unmarshal(modifiedData, &yamlConfig); err != nil {
+	// Parse the modified configuration (simplified structure)
+	var monitorsData map[string]interface{}
+	if err := yaml.Unmarshal(modifiedData, &monitorsData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
 	}
 
+	// Extract monitors from the simplified structure
+	monitorsMap := make(map[string]Monitor)
+	monitorFieldsMap := make(map[string]*MonitorFields)
+	if monitorsInterface, exists := monitorsData["monitors"]; exists {
+		if monitorsMapInterface, ok := monitorsInterface.(map[string]interface{}); ok {
+			for url, monitorInterface := range monitorsMapInterface {
+				if monitorMap, ok := monitorInterface.(map[string]interface{}); ok {
+					monitor := Monitor{}
+					fields := &MonitorFields{}
+
+					if name, ok := monitorMap["name"].(string); ok {
+						monitor.Name = name
+					}
+					if urlVal, ok := monitorMap["url"].(string); ok {
+						monitor.URL = urlVal
+					}
+					if method, ok := monitorMap["method"].(string); ok {
+						monitor.Method = method
+						fields.Method = true
+					}
+					if threshold, ok := monitorMap["threshold"].(int); ok {
+						monitor.Threshold = threshold
+						fields.Threshold = true
+					}
+					if statusCodes, ok := monitorMap["status_codes"].([]interface{}); ok {
+						fields.StatusCodes = true
+						for _, code := range statusCodes {
+							if codeStr, ok := code.(string); ok {
+								monitor.StatusCodes = append(monitor.StatusCodes, codeStr)
+							}
+						}
+					}
+					if sizeAlerts, ok := monitorMap["size_alerts"].(map[string]interface{}); ok {
+						fields.SizeAlerts = true
+						if enabled, ok := sizeAlerts["enabled"].(bool); ok {
+							monitor.SizeAlerts.Enabled = enabled
+						}
+						if historySize, ok := sizeAlerts["history_size"].(int); ok {
+							monitor.SizeAlerts.HistorySize = historySize
+						}
+						if threshold, ok := sizeAlerts["threshold"].(float64); ok {
+							monitor.SizeAlerts.Threshold = threshold
+						}
+					}
+					if checkStrategy, ok := monitorMap["check_strategy"].(string); ok {
+						monitor.CheckStrategy = checkStrategy
+						fields.CheckStrategy = true
+					}
+					if alertStrategy, ok := monitorMap["alert_strategy"].(string); ok {
+						monitor.AlertStrategy = alertStrategy
+						fields.AlertStrategy = true
+					}
+
+					// Check if headers was explicitly set (even if empty)
+					if _, headersExists := monitorMap["headers"]; headersExists {
+						fields.Headers = true
+						if headers, ok := monitorMap["headers"].(map[string]interface{}); ok {
+							monitor.Headers = make(map[string]string)
+							for k, v := range headers {
+								if vStr, ok := v.(string); ok {
+									monitor.Headers[k] = vStr
+								}
+							}
+						}
+					}
+
+					monitorsMap[url] = monitor
+					monitorFieldsMap[url] = fields
+				}
+			}
+		}
+	}
+
 	// Validate monitors (strict validation, no defaults applied)
-	if err := validateMonitors(yamlConfig.Monitors); err != nil {
+	if err := validateMonitors(monitorsMap); err != nil {
 		fmt.Printf("%s Invalid monitors: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
 		return
 	}
 
 	// Apply defaults for missing values
-	applyDefaults(yamlConfig.Monitors)
+	applyDefaults(monitorsMap)
 
-	// Save the changes
-	if err := saveModifiedState(stateManager, &yamlConfig); err != nil {
-		fmt.Printf("%s Failed to save changes: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-		return
+	// Clean defaults for explicitly set fields
+	for url, monitor := range monitorsMap {
+		if fields, exists := monitorFieldsMap[url]; exists {
+			cleanDefaults(&monitor, fields)
+			monitorsMap[url] = monitor
+		}
+	}
+
+	// Save the changes by updating the state manager
+	for url, monitor := range monitorsMap {
+		if err := stateManager.AddMonitor(monitor); err != nil {
+			fmt.Printf("%s Failed to save monitor %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
+			return
+		}
 	}
 
 	// Show summary
-	showEditSummary(yamlConfig)
+	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
+	fmt.Printf("Monitors configured: %d\n", len(monitorsMap))
+	fmt.Println()
+
+	if len(monitorsMap) == 0 {
+		fmt.Printf("%s No monitors configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+		return
+	}
+
+	fmt.Printf("%s Configured Monitors:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
+	fmt.Println()
+
+	i := 0
+	for _, monitor := range monitorsMap {
+		// Alternate row colors for better readability
+		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
+
+		entry := fmt.Sprintf(
+			"  %s %-30s %s",
+			qc.Colorize(fmt.Sprintf("%d.", i+1), qc.ColorYellow),
+			monitor.Name,
+			monitor.URL,
+		)
+		fmt.Println(qc.Colorize(entry, rowColor))
+		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
+			monitor.Method, monitor.Threshold, monitor.CheckStrategy, monitor.AlertStrategy)
+		i++
+	}
+
+	fmt.Printf("\n%s Configuration saved successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 }
 
 // createTempStateFile creates a temporary file with the current state for editing
@@ -117,33 +229,20 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 	// Get current monitors
 	monitors := stateManager.ListMonitors()
 
-	// Create YAML structure for editing
-	yamlConfig := YAMLConfig{
-		Version:  "1.0",
-		Monitors: make(map[string]Monitor),
-		Settings: stateManager.GetSettings(),
-		Strategies: map[string]interface{}{
-			"check": map[string]interface{}{
-				"http": map[string]interface{}{
-					"timeout":          10,
-					"follow_redirects": true,
-				},
-			},
-			"alert": map[string]interface{}{
-				"console": map[string]interface{}{
-					"format": "detailed",
-				},
-			},
-		},
+	// Create simplified YAML structure with only monitors
+	monitorsOnly := map[string]interface{}{
+		"monitors": make(map[string]Monitor),
 	}
 
-	// Copy monitors
+	// Copy monitors and clean defaults
 	for url, monitor := range monitors {
-		yamlConfig.Monitors[url] = monitor
+		// Clean defaults from the monitor before adding to YAML
+		cleanAllDefaults(&monitor)
+		monitorsOnly["monitors"].(map[string]Monitor)[url] = monitor
 	}
 
 	// Marshal to YAML
-	data, err := yaml.Marshal(yamlConfig)
+	data, err := yaml.Marshal(monitorsOnly)
 	if err != nil {
 		return "", err
 	}
@@ -163,46 +262,27 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 func addEditComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
 	commentedLines := []string{
-		"# Quick Watch Configuration",
-		"# Edit this file to modify your monitors",
+		"# To remove a monitor: delete its entry",
+		"# To modify a monitor: edit its properties",
+		"# To add a monitor: add a object with the list.",
+		"# Required fields: name, url",
 		"#",
-		"# IMPORTANT: The 'url' property is REQUIRED for each monitor",
-		"# If you provide an invalid value, validation will fail even if defaults exist",
-		"#",
-		"# To add a new monitor, add a new entry under 'monitors:'",
-		"# To remove a monitor, delete its entry",
-		"# To modify a monitor, edit its properties",
-		"#",
-		"# Example monitor entry with all properties:",
-		"#   my-api:",
-		"#     name: \"My API\"                    # REQUIRED: Display name for the monitor",
-		"#     url: \"https://api.example.com/health\"  # REQUIRED: URL to monitor",
-		"#     method: \"GET\"                     # DEFAULT: GET (options: GET, POST, PUT, DELETE, etc.)",
-		"#     headers:                            # DEFAULT: {} (empty object)",
+		"# Full example with all options:",
+		"#   comprehensive-example:",
+		"#     name: \"Comprehensive Monitor\"",
+		"#     url: \"https://api.example.com/health\"",
+		"#     method: \"GET\"                    # HTTP method (default: GET)",
+		"#     headers:                          # Custom headers (default: {})",
 		"#       Authorization: \"Bearer token\"",
 		"#       User-Agent: \"QuickWatch/1.0\"",
-		"#     threshold: 30                       # DEFAULT: 30 (seconds before alert)",
-		"#     status_codes: [\"2**\", \"302\"]     # DEFAULT: [\"*\"] (list of acceptable status codes)",
-		"#     check_strategy: \"http\"            # DEFAULT: http (options: http)",
-		"#     alert_strategy: \"console\"         # DEFAULT: console (options: console)",
-		"#",
-		"# Default values (used when properties are omitted):",
-		"#   method: \"GET\"",
-		"#   headers: {}",
-		"#   threshold: 30",
-		"#   status_codes: [\"*\"]",
-		"#   check_strategy: \"http\"",
-		"#   alert_strategy: \"console\"",
-		"#",
-		"# Validation rules:",
-		"#   - url: REQUIRED, must be a valid URL",
-		"#   - name: REQUIRED, must not be empty",
-		"#   - method: Must be valid HTTP method if provided",
-		"#   - threshold: Must be positive integer if provided",
-		"#   - status_codes: Must be list of valid patterns if provided",
-		"#   - check_strategy: Must be 'http' if provided",
-		"#   - alert_strategy: Must be 'console' if provided",
-		"#",
+		"#     threshold: 60                     # Down threshold in seconds (default: 30)",
+		"#     status_codes: [\"200\", \"201\"]    # Acceptable status codes (default: [\"*\"])",
+		"#     size_alerts:                      # Page size change detection (default: disabled)",
+		"#       enabled: true",
+		"#       history_size: 100",
+		"#       threshold: 0.5",
+		"#     check_strategy: \"http\"           # Check strategy (default: http)",
+		"#     alert_strategy: \"console\"        # Alert strategy (default: console)",
 		"",
 	}
 
@@ -271,6 +351,9 @@ func validateMonitors(monitors map[string]Monitor) error {
 // applyDefaults applies default values to monitors where properties are missing
 func applyDefaults(monitors map[string]Monitor) {
 	for url, monitor := range monitors {
+		// Clean defaults and show INFO messages
+		cleanAllDefaults(&monitor)
+
 		// Apply defaults only for missing values
 		if monitor.Method == "" {
 			monitor.Method = "GET"
@@ -290,67 +373,15 @@ func applyDefaults(monitors map[string]Monitor) {
 		if len(monitor.StatusCodes) == 0 {
 			monitor.StatusCodes = []string{"*"}
 		}
+		if monitor.SizeAlerts.HistorySize == 0 {
+			monitor.SizeAlerts = SizeAlertConfig{
+				Enabled:     true,
+				HistorySize: 100,
+				Threshold:   0.5, // 50% change threshold
+			}
+		}
 
 		// Update the map with the modified monitor
 		monitors[url] = monitor
 	}
-}
-
-// saveModifiedState saves the modified configuration to the state file
-func saveModifiedState(stateManager *StateManager, yamlConfig *YAMLConfig) error {
-	// Clear existing monitors
-	existingMonitors := stateManager.ListMonitors()
-	for url := range existingMonitors {
-		if err := stateManager.RemoveMonitor(url); err != nil {
-			// Ignore errors for non-existent monitors
-		}
-	}
-
-	// Add new monitors
-	for _, monitor := range yamlConfig.Monitors {
-		if err := stateManager.AddMonitor(monitor); err != nil {
-			return fmt.Errorf("failed to add monitor %s: %v", monitor.URL, err)
-		}
-	}
-
-	// Update settings if provided
-	if yamlConfig.Settings.WebhookPort > 0 || yamlConfig.Settings.WebhookPath != "" {
-		if err := stateManager.UpdateSettings(yamlConfig.Settings); err != nil {
-			return fmt.Errorf("failed to update settings: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// showEditSummary shows a summary of the changes made
-func showEditSummary(yamlConfig YAMLConfig) {
-	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
-	fmt.Printf("Monitors configured: %d\n", len(yamlConfig.Monitors))
-	fmt.Println()
-
-	if len(yamlConfig.Monitors) == 0 {
-		fmt.Printf("%s No monitors configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
-		return
-	}
-
-	fmt.Printf("%s Configured Monitors:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
-	fmt.Println()
-
-	i := 0
-	for _, monitor := range yamlConfig.Monitors {
-		// Alternate row colors for better readability
-		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
-
-		entry := fmt.Sprintf(
-			"%3d. %-30s %s",
-			i+1, monitor.Name, monitor.URL,
-		)
-		fmt.Println(qc.Colorize(entry, rowColor))
-		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
-			monitor.Method, monitor.Threshold, monitor.CheckStrategy, monitor.AlertStrategy)
-		i++
-	}
-
-	fmt.Printf("\n%s Configuration saved successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 }

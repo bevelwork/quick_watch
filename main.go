@@ -315,6 +315,157 @@ func parseHeaders(headers []string) map[string]string {
 	return result
 }
 
+// MonitorFields tracks which fields were explicitly set in the YAML
+type MonitorFields struct {
+	Method        bool
+	Headers       bool
+	Threshold     bool
+	StatusCodes   bool
+	SizeAlerts    bool
+	CheckStrategy bool
+	AlertStrategy bool
+}
+
+// cleanAllDefaults removes all default values from monitor configuration (for temp file creation)
+func cleanAllDefaults(monitor *Monitor) {
+	appliedDefaults := []string{}
+
+	// Check and clean method
+	if monitor.Method == "GET" {
+		monitor.Method = ""
+		appliedDefaults = append(appliedDefaults, "method: GET")
+	}
+
+	// Check and clean headers
+	if len(monitor.Headers) == 0 {
+		monitor.Headers = nil
+		appliedDefaults = append(appliedDefaults, "headers: {}")
+	}
+
+	// Check and clean threshold
+	if monitor.Threshold == 30 {
+		monitor.Threshold = 0
+		appliedDefaults = append(appliedDefaults, "threshold: 30s")
+	}
+
+	// Check and clean status codes
+	if len(monitor.StatusCodes) == 1 && monitor.StatusCodes[0] == "*" {
+		monitor.StatusCodes = nil
+		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
+	}
+
+	// Check and clean size alerts
+	if monitor.SizeAlerts.Enabled && monitor.SizeAlerts.HistorySize == 100 && monitor.SizeAlerts.Threshold == 0.5 {
+		monitor.SizeAlerts = SizeAlertConfig{}
+		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
+	}
+
+	// Check and clean check strategy
+	if monitor.CheckStrategy == "http" {
+		monitor.CheckStrategy = ""
+		appliedDefaults = append(appliedDefaults, "check_strategy: http")
+	}
+
+	// Check and clean alert strategy
+	if monitor.AlertStrategy == "console" {
+		monitor.AlertStrategy = ""
+		appliedDefaults = append(appliedDefaults, "alert_strategy: console")
+	}
+
+	// Show INFO message if any defaults were applied
+	if len(appliedDefaults) > 0 {
+		fmt.Printf("%s Applied defaults for %s: %s\n",
+			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
+			monitor.Name,
+			strings.Join(appliedDefaults, ", "))
+	}
+}
+
+// cleanDefaults removes default values from monitor configuration and shows INFO messages
+// It only cleans fields that were explicitly set to default values
+func cleanDefaults(monitor *Monitor, fields *MonitorFields) {
+	appliedDefaults := []string{}
+
+	// Check and clean method (only if it was explicitly set)
+	if fields.Method && monitor.Method == "GET" {
+		monitor.Method = ""
+		appliedDefaults = append(appliedDefaults, "method: GET")
+	}
+
+	// Check and clean headers (only if it was explicitly set)
+	if fields.Headers && len(monitor.Headers) == 0 {
+		monitor.Headers = nil
+		appliedDefaults = append(appliedDefaults, "headers: {}")
+	}
+
+	// Check and clean threshold (only if it was explicitly set)
+	if fields.Threshold && monitor.Threshold == 30 {
+		monitor.Threshold = 0
+		appliedDefaults = append(appliedDefaults, "threshold: 30s")
+	}
+
+	// Check and clean status codes (only if it was explicitly set)
+	if fields.StatusCodes && len(monitor.StatusCodes) == 1 && monitor.StatusCodes[0] == "*" {
+		monitor.StatusCodes = nil
+		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
+	}
+
+	// Check and clean size alerts (only if it was explicitly set)
+	if fields.SizeAlerts && monitor.SizeAlerts.Enabled && monitor.SizeAlerts.HistorySize == 100 && monitor.SizeAlerts.Threshold == 0.5 {
+		monitor.SizeAlerts = SizeAlertConfig{}
+		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
+	}
+
+	// Check and clean check strategy (only if it was explicitly set)
+	if fields.CheckStrategy && monitor.CheckStrategy == "http" {
+		monitor.CheckStrategy = ""
+		appliedDefaults = append(appliedDefaults, "check_strategy: http")
+	}
+
+	// Check and clean alert strategy (only if it was explicitly set)
+	if fields.AlertStrategy && monitor.AlertStrategy == "console" {
+		monitor.AlertStrategy = ""
+		appliedDefaults = append(appliedDefaults, "alert_strategy: console")
+	}
+
+	// Show INFO message if any defaults were applied
+	if len(appliedDefaults) > 0 {
+		fmt.Printf("%s Applied defaults for %s: %s\n",
+			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
+			monitor.Name,
+			strings.Join(appliedDefaults, ", "))
+	}
+}
+
+// applyDefaultsAfterClean applies default values after cleaning
+func applyDefaultsAfterClean(monitor *Monitor) {
+	if monitor.Method == "" {
+		monitor.Method = "GET"
+	}
+	if monitor.Headers == nil {
+		monitor.Headers = make(map[string]string)
+	}
+	if monitor.Threshold == 0 {
+		monitor.Threshold = 30
+	}
+	if len(monitor.StatusCodes) == 0 {
+		monitor.StatusCodes = []string{"*"}
+	}
+	if monitor.SizeAlerts.HistorySize == 0 {
+		monitor.SizeAlerts = SizeAlertConfig{
+			Enabled:     true,
+			HistorySize: 100,
+			Threshold:   0.5,
+		}
+	}
+	if monitor.CheckStrategy == "" {
+		monitor.CheckStrategy = "http"
+	}
+	if monitor.AlertStrategy == "" {
+		monitor.AlertStrategy = "console"
+	}
+}
+
 // printHeader prints the application header
 func printHeader() {
 	fmt.Printf("%s\n", qc.Colorize("╔══════════════════════════════════════════════════════════════╗", qc.ColorBlue))
@@ -439,15 +590,26 @@ func handleAddMonitor(stateFile, url, method string, headers []string, threshold
 
 	// Create monitor
 	monitor := Monitor{
-		Name:          fmt.Sprintf("Monitor-%s", url),
-		URL:           url,
-		Method:        method,
-		Headers:       parseHeaders(headers),
-		Threshold:     threshold,
-		StatusCodes:   []string{"*"}, // Default to accept all status codes
+		Name:        fmt.Sprintf("Monitor-%s", url),
+		URL:         url,
+		Method:      method,
+		Headers:     parseHeaders(headers),
+		Threshold:   threshold,
+		StatusCodes: []string{"*"}, // Default to accept all status codes
+		SizeAlerts: SizeAlertConfig{
+			Enabled:     true,
+			HistorySize: 100,
+			Threshold:   0.5, // 50% change threshold
+		},
 		CheckStrategy: checkStrategy,
 		AlertStrategy: alertStrategy,
 	}
+
+	// Clean defaults and show INFO messages
+	cleanAllDefaults(&monitor)
+
+	// Apply defaults for runtime
+	applyDefaultsAfterClean(&monitor)
 
 	// Add monitor
 	if err := stateManager.AddMonitor(monitor); err != nil {

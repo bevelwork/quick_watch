@@ -1,37 +1,59 @@
 version: "1.0"
 created: 2025-10-15T16:58:27.157109897-04:00
-updated: 2025-10-15T17:23:37.573643067-04:00
+updated: 2025-10-15T21:17:24.121958428-04:00
 monitors:
     https://httpbin.org/delay/1:
         name: Slow Service
         url: https://httpbin.org/delay/1
         method: GET
-        headers: {}
         threshold: 45
-        statuscodes:
+        status_codes:
             - '*'
-        checkstrategy: http
-        alertstrategy: console
+        size_alerts:
+            enabled: true
+            history_size: 100
+            threshold: 0.5
+        check_strategy: http
+        alert_strategy: console
     https://httpbin.org/status/200:
-        name: API Health Check
+        name: Monitor-https://httpbin.org/status/200
         url: https://httpbin.org/status/200
         method: GET
-        headers: {}
         threshold: 30
-        statuscodes:
+        status_codes:
             - '*'
-        checkstrategy: http
-        alertstrategy: console
+        size_alerts:
+            enabled: true
+            history_size: 100
+            threshold: 0.5
+        check_strategy: http
+        alert_strategy: console
     https://httpbin.org/status/201:
         name: Monitor-https://httpbin.org/status/201
         url: https://httpbin.org/status/201
         method: GET
-        headers: {}
         threshold: 25
-        statuscodes:
+        status_codes:
             - '*'
-        checkstrategy: http
-        alertstrategy: console
+        size_alerts:
+            enabled: true
+            history_size: 100
+            threshold: 0.5
+        check_strategy: http
+        alert_strategy: console
+    https://httpbin.org/status/404:
+        name: Monitor-https://httpbin.org/status/404
+        url: https://httpbin.org/status/404
+        method: POST
+        threshold: 60
+        status_codes:
+            - '*'
+        size_alerts:
+            enabled: true
+            history_size: 100
+            threshold: 0.5
+        check_strategy: http
+        alert_strategy: console
 settings:
     webhook_port: 8080
     webhook_path: /webhook

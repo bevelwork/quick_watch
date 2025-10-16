@@ -3,19 +3,28 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 )
 
 // Monitor represents a monitoring target
 type Monitor struct {
-	Name          string            `json:"name"`
-	URL           string            `json:"url"`
-	Method        string            `json:"method"`
-	Headers       map[string]string `json:"headers"`
-	Threshold     int               `json:"threshold"`    // seconds
-	StatusCodes   []string          `json:"status_codes"` // List of acceptable status codes (e.g., ["2**", "302"])
-	CheckStrategy string            `json:"check_strategy"`
-	AlertStrategy string            `json:"alert_strategy"`
+	Name          string            `json:"name" yaml:"name"`
+	URL           string            `json:"url" yaml:"url"`
+	Method        string            `json:"method" yaml:"method,omitempty"`
+	Headers       map[string]string `json:"headers" yaml:"headers,omitempty"`
+	Threshold     int               `json:"threshold" yaml:"threshold,omitempty"`       // seconds
+	StatusCodes   []string          `json:"status_codes" yaml:"status_codes,omitempty"` // List of acceptable status codes (e.g., ["2**", "302"])
+	SizeAlerts    SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
+	CheckStrategy string            `json:"check_strategy" yaml:"check_strategy,omitempty"`
+	AlertStrategy string            `json:"alert_strategy" yaml:"alert_strategy,omitempty"`
+}
+
+// SizeAlertConfig represents configuration for page size change detection
+type SizeAlertConfig struct {
+	Enabled     bool    `json:"enabled" yaml:"enabled"`           // Enable size change detection (default: true)
+	HistorySize int     `json:"history_size" yaml:"history_size"` // Number of responses to track (default: 100)
+	Threshold   float64 `json:"threshold" yaml:"threshold"`       // Percentage change threshold (default: 0.5 = 50%)
 }
 
 // MonitorConfig represents the configuration for monitors
@@ -55,6 +64,7 @@ type MonitorState struct {
 	LastCheck     *CheckResult
 	CheckStrategy CheckStrategy
 	AlertStrategy AlertStrategy
+	SizeHistory   []int64 // Track response sizes for change detection
 }
 
 // MonitoringEngine represents the core monitoring engine
@@ -160,6 +170,25 @@ func (e *MonitoringEngine) checkMonitor(ctx context.Context, state *MonitorState
 	}
 
 	state.LastCheck = result
+
+	// Check for size changes if enabled and we have a response size
+	if result.Success && result.ResponseSize > 0 {
+		if checkSizeChange(state, result.ResponseSize) {
+			// Calculate average size for the alert
+			previousResponses := state.SizeHistory[:len(state.SizeHistory)-1]
+			var sum int64
+			for _, size := range previousResponses {
+				sum += size
+			}
+			avgSize := float64(sum) / float64(len(previousResponses))
+			changePercent := math.Abs(float64(result.ResponseSize)-avgSize) / avgSize
+
+			// Send size change alert
+			if consoleAlert, ok := state.AlertStrategy.(*ConsoleAlertStrategy); ok {
+				consoleAlert.SendSizeChangeAlert(ctx, state.Monitor, result, avgSize, changePercent)
+			}
+		}
+	}
 
 	// Update state based on result
 	wasDown := state.IsDown
