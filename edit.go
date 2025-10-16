@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -64,7 +63,7 @@ func handleEditTargets(stateFile string) {
 	}
 
 	// Read the modified file
-	modifiedData, err := ioutil.ReadFile(tempFile)
+	modifiedData, err := os.ReadFile(tempFile)
 	if err != nil {
 		fmt.Printf("%s Failed to read modified file: %v\n",
 			qc.Colorize("❌ Error:", qc.ColorRed), err)
@@ -341,7 +340,7 @@ func handleEditTargets(stateFile string) {
 // createTempStateFile creates a temporary file with the current state for editing
 func createTempStateFile(stateManager *StateManager) (string, error) {
 	// Create temporary file
-	tempFile, err := ioutil.TempFile("", "quick_watch_edit_*.yml")
+	tempFile, err := os.CreateTemp("", "quick_watch_edit_*.yml")
 	if err != nil {
 		return "", err
 	}
@@ -576,7 +575,7 @@ func editSettings(stateManager *StateManager) {
 	}
 
 	// Read the modified settings
-	modifiedData, err := ioutil.ReadFile(tempFile)
+	modifiedData, err := os.ReadFile(tempFile)
 	if err != nil {
 		fmt.Printf("%s Failed to read modified file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -674,7 +673,7 @@ func editSettings(stateManager *StateManager) {
 // createTempSettingsFile creates a temporary file with the current settings for editing
 func createTempSettingsFile(stateManager *StateManager) (string, error) {
 	// Create temporary file
-	tempFile, err := ioutil.TempFile("", "quick_watch_settings_*.yml")
+	tempFile, err := os.CreateTemp("", "quick_watch_settings_*.yml")
 	if err != nil {
 		return "", err
 	}
@@ -795,7 +794,7 @@ func editAlerts(stateManager *StateManager) {
 	}
 
 	// Read the modified alerts
-	modifiedData, err := ioutil.ReadFile(tempFile)
+	modifiedData, err := os.ReadFile(tempFile)
 	if err != nil {
 		fmt.Printf("%s Failed to read modified file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -870,7 +869,7 @@ func editAlerts(stateManager *StateManager) {
 // createTempAlertsFile creates a temporary file with the current alerts for editing
 func createTempAlertsFile(stateManager *StateManager) (string, error) {
 	// Create temporary file
-	tempFile, err := ioutil.TempFile("", "quick_watch_alerts_*.yml")
+	tempFile, err := os.CreateTemp("", "quick_watch_alerts_*.yml")
 	if err != nil {
 		return "", err
 	}
@@ -1564,7 +1563,7 @@ func validateConfigFile(configFile string, verbose bool) {
 	}
 
 	// Read and parse the full config file
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		fmt.Printf("%s Failed to read config file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)

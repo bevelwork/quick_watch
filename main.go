@@ -8,7 +8,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -107,7 +107,7 @@ func handleEditCommand(args []string) {
 	// Support reading from stdin
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--stdin" {
-			data, err := ioutil.ReadAll(os.Stdin)
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
@@ -275,7 +275,7 @@ func loadConfiguration(configFile, url, method string, headers []string, thresho
 
 	// If config file is provided, load from YAML file
 	if configFile != "" {
-		data, err := ioutil.ReadFile(configFile)
+		data, err := os.ReadFile(configFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read config file: %v", err)
 		}
@@ -700,7 +700,7 @@ func handleSettingsCommand(args []string) {
 				fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
 			}
-			data, err := ioutil.ReadAll(os.Stdin)
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
@@ -721,7 +721,7 @@ func handleSettingsCommand(args []string) {
 	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--stdin" {
-			data, err := ioutil.ReadAll(os.Stdin)
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
@@ -752,7 +752,7 @@ func handleNotifiersCommand(args []string) {
 			}
 		case "--stdin":
 			// Handle stdin mode
-			data, err := ioutil.ReadAll(os.Stdin)
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
@@ -778,7 +778,7 @@ func handleNotifiersCommand(args []string) {
 	}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--stdin" {
-			data, err := ioutil.ReadAll(os.Stdin)
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 				os.Exit(1)
