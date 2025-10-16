@@ -121,6 +121,106 @@ func mapFromSlice(items []Target) map[string]Target {
 	return res
 }
 
+// TestTargetsEditor_RevertsChangesOnNoop reproduces the reported issue where
+// opening the targets editor with no changes reverts previously set alerts
+func TestTargetsEditor_RevertsChangesOnNoop(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "watch-state.yml")
+	t.Setenv("EDITOR", "/bin/true")
+
+	sm := NewStateManager(statePath)
+	if err := sm.Load(); err != nil {
+		t.Fatalf("initial load failed: %v", err)
+	}
+
+	// Set up alerts first
+	alerts := map[string]NotifierConfig{
+		"console": {Name: "console", Type: "console", Enabled: true, Settings: map[string]interface{}{"style": "stylized", "color": true}},
+		"slack":   {Name: "slack", Type: "slack", Enabled: true, Settings: map[string]interface{}{"webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"}},
+	}
+	if err := sm.UpdateAlerts(alerts); err != nil {
+		t.Fatalf("update alerts failed: %v", err)
+	}
+
+	// Add targets with specific alerts via stdin
+	stdinYAML := []byte(
+		"Monitor-https://bevel.work/blog:\n" +
+			"  url: https://bevel.work/blog\n" +
+			"  alerts: [console]\n" +
+			"secondary:\n" +
+			"  url: https://bevel.work\n" +
+			"  alerts: [slack]\n",
+	)
+	applyTargetsYAML(sm, stdinYAML)
+
+	// Verify alerts were set correctly
+	if got, ok := sm.GetTarget("https://bevel.work/blog"); !ok {
+		t.Fatalf("target not found")
+	} else if len(got.Alerts) != 1 || got.Alerts[0] != "console" {
+		t.Fatalf("expected Alerts [console], got %v", got.Alerts)
+	}
+	if got, ok := sm.GetTarget("https://bevel.work"); !ok {
+		t.Fatalf("target not found")
+	} else if len(got.Alerts) != 1 || got.Alerts[0] != "slack" {
+		t.Fatalf("expected Alerts [slack], got %v", got.Alerts)
+	}
+
+	// Now run targets editor with no changes (simulates user opening and closing editor)
+	handleEditTargets(statePath)
+
+	// Check if alerts were reverted
+	if got, ok := sm.GetTarget("https://bevel.work/blog"); !ok {
+		t.Fatalf("target missing after noop edit")
+	} else if len(got.Alerts) != 1 || got.Alerts[0] != "console" {
+		t.Fatalf("alerts reverted for blog target, got %v", got.Alerts)
+	}
+	if got, ok := sm.GetTarget("https://bevel.work"); !ok {
+		t.Fatalf("target missing after noop edit")
+	} else if len(got.Alerts) != 1 || got.Alerts[0] != "slack" {
+		t.Fatalf("alerts reverted for secondary target, got %v", got.Alerts)
+	}
+}
+
+// Ensure that opening the targets editor does not remove global alerts entries
+func TestTargetsEditor_DoesNotRemoveGlobalAlerts(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "watch-state.yml")
+	t.Setenv("EDITOR", "/bin/true")
+
+	sm := NewStateManager(statePath)
+	if err := sm.Load(); err != nil {
+		t.Fatalf("initial load failed: %v", err)
+	}
+
+	// Seed two alerts
+	alerts := map[string]NotifierConfig{
+		"console": {Name: "console", Type: "console", Enabled: true, Settings: map[string]interface{}{"style": "stylized", "color": true}},
+		"slack":   {Name: "slack", Type: "slack", Enabled: true, Settings: map[string]interface{}{"webhook_url": "https://hooks.slack.com/services/T000/B000/XXXX"}},
+	}
+	if err := sm.UpdateAlerts(alerts); err != nil {
+		t.Fatalf("update alerts failed: %v", err)
+	}
+
+	// Add one target
+	if err := sm.AddTarget(Target{Name: "secondary", URL: "https://bevel.work"}); err != nil {
+		t.Fatalf("add target failed: %v", err)
+	}
+
+	// Open/close targets editor with no changes
+	handleEditTargets(statePath)
+
+	// Alerts should remain intact
+	got := sm.GetAlerts()
+	if _, ok := got["console"]; !ok {
+		t.Fatalf("console alert removed unexpectedly")
+	}
+	if s, ok := got["slack"]; !ok {
+		t.Fatalf("slack alert removed unexpectedly")
+	} else if !s.Enabled {
+		t.Fatalf("slack alert unexpectedly disabled")
+	}
+}
+
 // TestTargetsEditor_PreservesAlertsOnNoop reproduces the reported alerts loss scenario
 // and ensures that opening/closing the targets editor without changes does not
 // modify the Alerts list for a target.

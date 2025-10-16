@@ -236,13 +236,7 @@ func handleEditTargets(stateFile string) {
 
 	// Do not apply defaults here: preserve existing state for unspecified fields
 
-	// Clean defaults for explicitly set fields
-	for url, target := range targetsMap {
-		if fields, exists := targetFieldsMap[url]; exists {
-			cleanDefaults(&target, fields)
-			targetsMap[url] = target
-		}
-	}
+	// Preserve user-provided values exactly as entered; do not strip defaults
 
 	// Save the changes by updating the state manager
 	for url, target := range targetsMap {
@@ -366,6 +360,12 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 		}
 		entry := map[string]interface{}{
 			"url": target.URL,
+		}
+		// Include alerts field to preserve user-set alerts
+		if len(target.Alerts) > 0 {
+			entry["alerts"] = target.Alerts
+		} else if target.AlertStrategy != "" {
+			entry["alerts"] = []string{target.AlertStrategy}
 		}
 		simplified[name] = entry
 	}
@@ -957,6 +957,313 @@ func addAlertsComments(data []byte) []byte {
 	}
 	commentedLines = append(commentedLines, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
+}
+
+// applyTargetsYAML ingests targets YAML content (from stdin or file) and saves changes
+func applyTargetsYAML(stateManager *StateManager, modifiedData []byte) {
+	// Validate the YAML
+	if err := validateYAML(modifiedData); err != nil {
+		fmt.Printf("%s Invalid YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Println("Please fix the errors and try again.")
+		return
+	}
+
+	// Parse targets with robust parser
+	targetsMap, targetFieldsMap, err := parseTargetsFromYAML(modifiedData)
+	if err != nil {
+		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	// Validate (no defaults applied here)
+	if err := validateTargets(targetsMap, stateManager); err != nil {
+		fmt.Printf("%s Invalid targets: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
+		return
+	}
+
+	// Merge with existing state to preserve unspecified fields
+	for url, target := range targetsMap {
+		if existing, ok := stateManager.GetTarget(url); ok {
+			fields := targetFieldsMap[url]
+			if fields == nil {
+				fields = &TargetFields{}
+			}
+			if !fields.Method && target.Method == "" {
+				target.Method = existing.Method
+			}
+			if !fields.Headers && len(target.Headers) == 0 && existing.Headers != nil {
+				target.Headers = existing.Headers
+			}
+			if !fields.Threshold && target.Threshold == 0 {
+				target.Threshold = existing.Threshold
+			}
+			if !fields.StatusCodes && len(target.StatusCodes) == 0 && len(existing.StatusCodes) > 0 {
+				target.StatusCodes = existing.StatusCodes
+			}
+			if !fields.SizeAlerts && (target.SizeAlerts == (SizeAlertConfig{})) {
+				target.SizeAlerts = existing.SizeAlerts
+			}
+			if !fields.CheckStrategy && target.CheckStrategy == "" {
+				target.CheckStrategy = existing.CheckStrategy
+			}
+			if !fields.Alerts && len(target.Alerts) == 0 {
+				if len(existing.Alerts) > 0 {
+					target.Alerts = existing.Alerts
+				} else if existing.AlertStrategy != "" {
+					target.Alerts = []string{existing.AlertStrategy}
+				}
+			}
+			if target.Name == "" {
+				target.Name = existing.Name
+			}
+		}
+		if err := stateManager.AddTarget(target); err != nil {
+			fmt.Printf("%s Failed to save target %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
+			return
+		}
+	}
+
+	// Summary output
+	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
+	fmt.Printf("Targets configured: %d\n", len(targetsMap))
+	fmt.Println()
+	if len(targetsMap) == 0 {
+		fmt.Printf("%s No targets configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+		return
+	}
+	fmt.Printf("%s Configured Targets:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
+	fmt.Println()
+	i := 0
+	for _, target := range targetsMap {
+		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
+		entry := fmt.Sprintf("  %s %-30s %s", qc.Colorize(fmt.Sprintf("%d.", i+1), qc.ColorYellow), target.Name, target.URL)
+		fmt.Println(qc.Colorize(entry, rowColor))
+		displayMethod := target.Method
+		if strings.TrimSpace(displayMethod) == "" {
+			displayMethod = "GET"
+		}
+		displayThreshold := target.Threshold
+		if displayThreshold == 0 {
+			displayThreshold = 30
+		}
+		displayCheck := target.CheckStrategy
+		if strings.TrimSpace(displayCheck) == "" {
+			displayCheck = "http"
+		}
+		displayAlerts := strings.Join(target.Alerts, ", ")
+		if strings.TrimSpace(displayAlerts) == "" {
+			if strings.TrimSpace(target.AlertStrategy) != "" {
+				displayAlerts = target.AlertStrategy
+			} else {
+				displayAlerts = "console"
+			}
+		}
+		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n", displayMethod, displayThreshold, displayCheck, displayAlerts)
+		i++
+	}
+	fmt.Printf("\n%s Configuration saved successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
+}
+
+// applySettingsYAML ingests settings YAML content (from stdin or file) and saves changes
+func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
+	if err := validateSettingsYAML(modifiedData); err != nil {
+		fmt.Printf("%s Invalid YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Println("Please fix the errors and try again.")
+		return
+	}
+	var settingsData map[string]interface{}
+	if err := yaml.Unmarshal(modifiedData, &settingsData); err != nil {
+		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+	settings := ServerSettings{
+		WebhookPort:      8080,
+		WebhookPath:      "/webhook",
+		CheckInterval:    5,
+		DefaultThreshold: 30,
+		Startup:          StartupConfig{Enabled: true, Alerts: []string{"console"}},
+	}
+	if v, ok := settingsData["webhook_port"].(int); ok {
+		settings.WebhookPort = v
+	}
+	if v, ok := settingsData["webhook_path"].(string); ok {
+		settings.WebhookPath = v
+	}
+	if v, ok := settingsData["check_interval"].(int); ok {
+		settings.CheckInterval = v
+	}
+	if v, ok := settingsData["default_threshold"].(int); ok {
+		settings.DefaultThreshold = v
+	}
+	if startupData, ok := settingsData["startup"].(map[string]interface{}); ok {
+		if v, ok := startupData["enabled"].(bool); ok {
+			settings.Startup.Enabled = v
+		}
+		if al, ok := startupData["alerts"].([]interface{}); ok {
+			settings.Startup.Alerts = make([]string, 0, len(al))
+			for _, a := range al {
+				if s, ok := a.(string); ok {
+					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
+				}
+			}
+		} else if al, ok := startupData["notifiers"].([]interface{}); ok {
+			settings.Startup.Alerts = make([]string, 0, len(al))
+			for _, a := range al {
+				if s, ok := a.(string); ok {
+					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
+				}
+			}
+		} else if al, ok := startupData["alert_strategies"].([]interface{}); ok {
+			settings.Startup.Alerts = make([]string, 0, len(al))
+			for _, a := range al {
+				if s, ok := a.(string); ok {
+					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
+				}
+			}
+		}
+		if v, ok := startupData["check_all_targets"].(bool); ok {
+			settings.Startup.CheckAllTargets = v
+		}
+	}
+	if v, ok := settingsData["startup_message"].(bool); ok {
+		settings.Startup.Enabled = v
+		if v && len(settings.Startup.Alerts) == 0 {
+			settings.Startup.Alerts = []string{"console"}
+		}
+	}
+	if err := validateSettings(settings); err != nil {
+		fmt.Printf("%s Invalid settings: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
+		return
+	}
+	if err := stateManager.UpdateSettings(settings); err != nil {
+		fmt.Printf("%s Failed to update settings: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	// Show summary similar to targets
+	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
+	fmt.Printf("Settings configured\n")
+	fmt.Println()
+
+	// Summarize key settings
+	fmt.Printf("%s Server Settings:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
+	fmt.Println()
+	fmt.Printf("  %s Webhook Port: %d\n", qc.Colorize("-", qc.ColorYellow), settings.WebhookPort)
+	fmt.Printf("  %s Webhook Path: %s\n", qc.Colorize("-", qc.ColorYellow), settings.WebhookPath)
+	fmt.Printf("  %s Check Interval: %ds\n", qc.Colorize("-", qc.ColorYellow), settings.CheckInterval)
+	fmt.Printf("  %s Default Threshold: %ds\n", qc.Colorize("-", qc.ColorYellow), settings.DefaultThreshold)
+
+	// Startup summary
+	startupStatus := "disabled"
+	if settings.Startup.Enabled {
+		startupStatus = "enabled"
+	}
+	fmt.Printf("  %s Startup: %s\n", qc.Colorize("-", qc.ColorYellow), startupStatus)
+	if len(settings.Startup.Alerts) > 0 {
+		fmt.Printf("     Startup Alerts: %s\n", strings.Join(settings.Startup.Alerts, ", "))
+	}
+	if settings.Startup.CheckAllTargets {
+		fmt.Printf("     Startup Check All Targets: true\n")
+	}
+
+	fmt.Printf("\n%s Settings updated successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
+}
+
+// applyAlertsYAML ingests alerts YAML content (from stdin or file) and saves changes
+func applyAlertsYAML(stateManager *StateManager, modifiedData []byte) {
+	if err := validateAlertsYAML(modifiedData); err != nil {
+		fmt.Printf("%s Invalid YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Println("Please fix the errors and try again.")
+		return
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(modifiedData, &raw); err != nil {
+		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+	alerts := make(map[string]NotifierConfig)
+	var iter map[string]interface{}
+	if v, ok := raw["alerts"].(map[string]interface{}); ok {
+		iter = v
+	} else if v, ok := raw["alerts"].(map[string]interface{}); ok {
+		iter = v
+	} else {
+		iter = raw
+	}
+	for name, alertInterface := range iter {
+		if alertMap, ok := alertInterface.(map[string]interface{}); ok {
+			alert := NotifierConfig{Name: name, Enabled: true, Settings: make(map[string]interface{})}
+			if v, ok := alertMap["type"].(string); ok {
+				alert.Type = v
+			}
+			if v, ok := alertMap["enabled"].(bool); ok {
+				alert.Enabled = v
+			}
+			if v, ok := alertMap["description"].(string); ok {
+				alert.Description = v
+			}
+			if v, ok := alertMap["settings"].(map[string]interface{}); ok {
+				alert.Settings = v
+			}
+			alerts[name] = alert
+		}
+	}
+	if err := validateAlerts(alerts); err != nil {
+		fmt.Printf("%s Invalid alerts: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
+		return
+	}
+	if err := stateManager.UpdateAlerts(alerts); err != nil {
+		fmt.Printf("%s Failed to update alerts: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	// Show summary
+	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
+	fmt.Printf("Alerts configured: %d\n", len(alerts))
+	fmt.Println()
+
+	if len(alerts) == 0 {
+		fmt.Printf("%s No alerts configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+		return
+	}
+
+	fmt.Printf("%s Configured Alerts:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
+	fmt.Println()
+
+	i := 0
+	for name, alert := range alerts {
+		// Alternate row colors for better readability
+		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
+
+		status := "enabled"
+		if !alert.Enabled {
+			status = "disabled"
+		}
+
+		entry := fmt.Sprintf(
+			"  %s %-20s %s (%s)",
+			qc.Colorize(fmt.Sprintf("%d.", i+1), qc.ColorYellow),
+			name,
+			alert.Type,
+			status,
+		)
+		fmt.Println(qc.Colorize(entry, rowColor))
+
+		if alert.Description != "" {
+			fmt.Printf("     Description: %s\n", alert.Description)
+		}
+
+		if len(alert.Settings) > 0 {
+			fmt.Printf("     Settings: %d configured\n", len(alert.Settings))
+		}
+
+		i++
+	}
+
+	fmt.Printf("\n%s Alerts updated successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 }
 
 // parseTargetsFromYAML parses targets from any of the supported editor formats

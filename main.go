@@ -104,6 +104,22 @@ func showHelp() {
 // handleEditCommand handles the edit action
 func handleEditCommand(args []string) {
 	stateFile := getStateFile(args)
+	// Support reading from stdin
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--stdin" {
+			data, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			sm := NewStateManager(stateFile)
+			if err := sm.Load(); err != nil {
+				log.Printf("Warning: Could not load existing state: %v", err)
+			}
+			applyTargetsYAML(sm, data)
+			return
+		}
+	}
 	handleEditTargets(stateFile)
 }
 
@@ -588,10 +604,7 @@ func handleAddTarget(stateFile, url, method string, headers []string, threshold 
 		Alerts: []string{alertStrategy},
 	}
 
-	// Clean defaults and show INFO messages
-	cleanAllDefaults(&target)
-
-	// Apply defaults for runtime
+	// Preserve user-entered values as-is; apply runtime defaults only when missing
 	applyDefaultsAfterClean(&target)
 
 	// Add target
@@ -680,6 +693,20 @@ func handleSettingsCommand(args []string) {
 				fmt.Printf("%s --state requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
 				os.Exit(1)
 			}
+		case "--stdin":
+			// Handle stdin directly for settings
+			stateManager := NewStateManager(stateFile)
+			if err := stateManager.Load(); err != nil {
+				fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			data, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			applySettingsYAML(stateManager, data)
+			return
 		default:
 			fmt.Printf("%s Unknown option: %s\n", qc.Colorize("❌ Error:", qc.ColorRed), args[i])
 			os.Exit(1)
@@ -692,7 +719,17 @@ func handleSettingsCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--stdin" {
+			data, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			applySettingsYAML(stateManager, data)
+			return
+		}
+	}
 	// Edit settings
 	editSettings(stateManager)
 }
@@ -713,6 +750,20 @@ func handleNotifiersCommand(args []string) {
 				fmt.Printf("%s --state requires a file path\n", qc.Colorize("❌ Error:", qc.ColorRed))
 				os.Exit(1)
 			}
+		case "--stdin":
+			// Handle stdin mode
+			data, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			stateManager := NewStateManager(stateFile)
+			if err := stateManager.Load(); err != nil {
+				fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			applyAlertsYAML(stateManager, data)
+			return
 		default:
 			fmt.Printf("%s Unknown option: %s\n", qc.Colorize("❌ Error:", qc.ColorRed), args[i])
 			os.Exit(1)
@@ -725,7 +776,17 @@ func handleNotifiersCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--stdin" {
+			data, err := ioutil.ReadAll(os.Stdin)
+			if err != nil {
+				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+				os.Exit(1)
+			}
+			applyAlertsYAML(stateManager, data)
+			return
+		}
+	}
 	// Edit alerts
 	editAlerts(stateManager)
 }
