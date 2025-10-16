@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24.4'
+        cache: true
+        
+    - name: Download dependencies
+      run: go mod download
+      
+    - name: Read version from version/version.go
+      id: version
+      run: |
+        MAJOR=$(grep -E '^\s*Major\s*=\s*[0-9]+' version/version.go | sed -E 's/.*Major\s*=\s*([0-9]+).*/\1/')
+        MINOR=$(grep -E '^\s*Minor\s*=\s*[0-9]+' version/version.go | sed -E 's/.*Minor\s*=\s*([0-9]+).*/\1/')
+        DATE=$(grep -E '^\s*PatchDate\s*=\s*"[0-9]+"' version/version.go | sed -E 's/.*"([0-9]+)".*/\1/')
+        FULL="$MAJOR.$MINOR.$DATE"
+        VERSION="$FULL"
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "major=$MAJOR" >> $GITHUB_OUTPUT
+        echo "minor=$MINOR" >> $GITHUB_OUTPUT
+        echo "date=$DATE" >> $GITHUB_OUTPUT
+        echo "Generated version: $VERSION"
+        
+    - name: Check if version already exists
+      id: version_check
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if git tag -l | grep -q "^${VERSION}$"; then
+          echo "Version $VERSION already exists, skipping release"
+          echo "skip_release=true" >> $GITHUB_OUTPUT
+        else
+          echo "skip_release=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build binary
+      if: steps.version_check.outputs.skip_release == 'false'
+      run: |
+        echo "Building quick_watch"
+        go build -v -o quick_watch .
+
+    - name: Create and push tag
+      if: steps.version_check.outputs.skip_release == 'false'
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "$VERSION" -m "Release $VERSION"
+        git push origin "$VERSION"
+        echo "Created and pushed tag: $VERSION"
+        
+    - name: Generate checksums
+      if: steps.version_check.outputs.skip_release == 'false'
+      run: |
+        sha256sum quick_watch > quick_watch.sha256
+        echo "Generated checksum:"
+        cat quick_watch.sha256
+        
+    - name: Create Release
+      if: steps.version_check.outputs.skip_release == 'false'
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        # Create release using GitHub CLI
+        gh release create "$VERSION" \
+          --title "Release $VERSION" \
+          --notes "## Changes in $VERSION
+
+        ## Direct installation
+        
+        \`\`\`bash
+        go install github.com/bevelwork/quick_watch@$VERSION
+        \`\`\`
+        
+        ## Using this release
+        
+        Download the binary from the assets below.
+        
+        ### Usage
+        \`\`\`bash
+        # Make executable
+        chmod +x quick_watch
+        
+        # Run with help
+        ./quick_watch -h
+        
+        \`\`\`
+        
+        ## Checksums
+        - SHA256: \`$(sha256sum quick_watch | cut -d' ' -f1)\`" \
+          ./quick_watch \
+          ./quick_watch.sha256
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
