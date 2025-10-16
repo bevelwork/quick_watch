@@ -26,14 +26,14 @@ type CheckResult struct {
 
 // CheckStrategy defines the interface for health check strategies
 type CheckStrategy interface {
-	Check(ctx context.Context, monitor *Monitor) (*CheckResult, error)
+	Check(ctx context.Context, target *Target) (*CheckResult, error)
 	Name() string
 }
 
 // AlertStrategy defines the interface for alert strategies
 type AlertStrategy interface {
-	SendAlert(ctx context.Context, monitor *Monitor, result *CheckResult) error
-	SendAllClear(ctx context.Context, monitor *Monitor, result *CheckResult) error
+	SendAlert(ctx context.Context, target *Target, result *CheckResult) error
+	SendAllClear(ctx context.Context, target *Target, result *CheckResult) error
 	Name() string
 }
 
@@ -103,8 +103,8 @@ func isStatusCodeAllowed(statusCode int, allowedCodes []string) bool {
 }
 
 // checkSizeChange detects significant changes in response size
-func checkSizeChange(state *MonitorState, newSize int64) bool {
-	if !state.Monitor.SizeAlerts.Enabled {
+func checkSizeChange(state *TargetState, newSize int64) bool {
+	if !state.Target.SizeAlerts.Enabled {
 		return false
 	}
 
@@ -112,7 +112,7 @@ func checkSizeChange(state *MonitorState, newSize int64) bool {
 	state.SizeHistory = append(state.SizeHistory, newSize)
 
 	// Keep only the last N responses
-	historySize := state.Monitor.SizeAlerts.HistorySize
+	historySize := state.Target.SizeAlerts.HistorySize
 	if len(state.SizeHistory) > historySize {
 		state.SizeHistory = state.SizeHistory[len(state.SizeHistory)-historySize:]
 	}
@@ -134,14 +134,14 @@ func checkSizeChange(state *MonitorState, newSize int64) bool {
 	change := math.Abs(float64(newSize)-avgSize) / avgSize
 
 	// Check if change exceeds threshold
-	return change >= state.Monitor.SizeAlerts.Threshold
+	return change >= state.Target.SizeAlerts.Threshold
 }
 
 // Check performs an HTTP health check
-func (h *HTTPCheckStrategy) Check(ctx context.Context, monitor *Monitor) (*CheckResult, error) {
+func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckResult, error) {
 	start := time.Now()
 
-	req, err := http.NewRequestWithContext(ctx, monitor.Method, monitor.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, target.Method, target.URL, nil)
 	if err != nil {
 		return &CheckResult{
 			Success:   false,
@@ -151,7 +151,7 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, monitor *Monitor) (*Check
 	}
 
 	// Add headers
-	for key, value := range monitor.Headers {
+	for key, value := range target.Headers {
 		req.Header.Set(key, value)
 	}
 
@@ -179,7 +179,7 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, monitor *Monitor) (*Check
 	}
 
 	// Check if status code matches allowed status codes
-	success := isStatusCodeAllowed(resp.StatusCode, monitor.StatusCodes)
+	success := isStatusCodeAllowed(resp.StatusCode, target.StatusCodes)
 
 	return &CheckResult{
 		Success:      success,
@@ -204,16 +204,16 @@ func NewConsoleAlertStrategy() *ConsoleAlertStrategy {
 }
 
 // SendAlert sends an alert to the console
-func (c *ConsoleAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (c *ConsoleAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
 	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
 	fmt.Printf("%s %s is DOWN - %s (Status: %d, Time: %v)\n",
 		qc.Colorize("🚨 ALERT:", qc.ColorRed),
-		qc.Colorize(monitor.Name, qc.ColorRed),
-		monitor.URL,
+		qc.Colorize(target.Name, qc.ColorRed),
+		target.URL,
 		result.StatusCode,
 		result.ResponseTime)
-	fmt.Printf("   %s %s\n", qc.Colorize("Monitor:", qc.ColorCyan), monitor.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), monitor.URL)
+	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
+	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
 	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
 	fmt.Printf("   %s %v\n", qc.Colorize("Response Time:", qc.ColorCyan), result.ResponseTime)
 	if result.ResponseSize > 0 {
@@ -224,16 +224,16 @@ func (c *ConsoleAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, 
 }
 
 // SendAllClear sends an all-clear notification to the console
-func (c *ConsoleAlertStrategy) SendAllClear(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (c *ConsoleAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
 	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
 	fmt.Printf("%s %s is UP - %s (Status: %d, Time: %v)\n",
 		qc.Colorize("✅ ALL CLEAR:", qc.ColorGreen),
-		qc.Colorize(monitor.Name, qc.ColorGreen),
-		monitor.URL,
+		qc.Colorize(target.Name, qc.ColorGreen),
+		target.URL,
 		result.StatusCode,
 		result.ResponseTime)
-	fmt.Printf("   %s %s\n", qc.Colorize("Monitor:", qc.ColorCyan), monitor.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), monitor.URL)
+	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
+	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
 	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
 	fmt.Printf("   %s %v\n", qc.Colorize("Response Time:", qc.ColorCyan), result.ResponseTime)
 	if result.ResponseSize > 0 {
@@ -244,7 +244,7 @@ func (c *ConsoleAlertStrategy) SendAllClear(ctx context.Context, monitor *Monito
 }
 
 // SendSizeChangeAlert sends a size change alert to the console
-func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, monitor *Monitor, result *CheckResult, avgSize float64, changePercent float64) error {
+func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, target *Target, result *CheckResult, avgSize float64, changePercent float64) error {
 	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
 	changeDirection := "increased"
 	if float64(result.ResponseSize) < avgSize {
@@ -253,14 +253,14 @@ func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, monitor 
 
 	fmt.Printf("%s %s response size %s significantly - %s (Size: %d bytes, Avg: %.0f bytes, Change: %.1f%%)\n",
 		qc.Colorize("📏 SIZE ALERT:", qc.ColorYellow),
-		qc.Colorize(monitor.Name, qc.ColorYellow),
+		qc.Colorize(target.Name, qc.ColorYellow),
 		changeDirection,
-		monitor.URL,
+		target.URL,
 		result.ResponseSize,
 		avgSize,
 		changePercent*100)
-	fmt.Printf("   %s %s\n", qc.Colorize("Monitor:", qc.ColorCyan), monitor.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), monitor.URL)
+	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
+	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
 	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
 	fmt.Printf("   %s %d bytes\n", qc.Colorize("Current Size:", qc.ColorCyan), result.ResponseSize)
 	fmt.Printf("   %s %.0f bytes\n", qc.Colorize("Average Size:", qc.ColorCyan), avgSize)
@@ -291,11 +291,11 @@ func NewWebhookAlertStrategy(webhookURL string) *WebhookAlertStrategy {
 }
 
 // SendAlert sends an alert via webhook
-func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
 	payload := map[string]interface{}{
 		"type":          "alert",
-		"monitor":       monitor.Name,
-		"url":           monitor.URL,
+		"target":       target.Name,
+		"url":           target.URL,
 		"status":        "down",
 		"timestamp":     result.Timestamp,
 		"error":         result.Error,
@@ -306,11 +306,11 @@ func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, 
 }
 
 // SendAllClear sends an all-clear notification via webhook
-func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
 	payload := map[string]interface{}{
 		"type":          "all_clear",
-		"monitor":       monitor.Name,
-		"url":           monitor.URL,
+		"target":       target.Name,
+		"url":           target.URL,
 		"status":        "up",
 		"timestamp":     result.Timestamp,
 		"status_code":   result.StatusCode,
@@ -350,9 +350,9 @@ func NewSlackAlertStrategy(webhookURL string) *SlackAlertStrategy {
 }
 
 // SendAlert sends an alert to Slack
-func (s *SlackAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (s *SlackAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
 	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
-		monitor.Name, monitor.URL, result.StatusCode, result.ResponseTime, result.Error)
+		target.Name, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
 	payload := map[string]interface{}{
 		"text":   message,
@@ -363,13 +363,13 @@ func (s *SlackAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, re
 				"mrkdwn_in": []string{"fields"},
 				"fields": []map[string]interface{}{
 					{
-						"title": "Monitor",
-						"value": fmt.Sprintf("*%s*", monitor.Name),
+						"title": "Target",
+						"value": fmt.Sprintf("*%s*", target.Name),
 						"short": true,
 					},
 					{
 						"title": "URL",
-						"value": fmt.Sprintf("<%s|%s>", monitor.URL, monitor.URL),
+						"value": fmt.Sprintf("<%s|%s>", target.URL, target.URL),
 						"short": true,
 					},
 					{
@@ -398,9 +398,9 @@ func (s *SlackAlertStrategy) SendAlert(ctx context.Context, monitor *Monitor, re
 }
 
 // SendAllClear sends an all-clear notification to Slack
-func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, monitor *Monitor, result *CheckResult) error {
+func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
 	message := fmt.Sprintf("✅ *%s* is UP\n• URL: %s\n• Status: %d\n• Time: %v",
-		monitor.Name, monitor.URL, result.StatusCode, result.ResponseTime)
+		target.Name, target.URL, result.StatusCode, result.ResponseTime)
 
 	payload := map[string]interface{}{
 		"text":   message,
@@ -411,13 +411,13 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, monitor *Monitor,
 				"mrkdwn_in": []string{"fields"},
 				"fields": []map[string]interface{}{
 					{
-						"title": "Monitor",
-						"value": fmt.Sprintf("*%s*", monitor.Name),
+						"title": "Target",
+						"value": fmt.Sprintf("*%s*", target.Name),
 						"short": true,
 					},
 					{
 						"title": "URL",
-						"value": fmt.Sprintf("<%s|%s>", monitor.URL, monitor.URL),
+						"value": fmt.Sprintf("<%s|%s>", target.URL, target.URL),
 						"short": true,
 					},
 					{
@@ -474,9 +474,9 @@ func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[s
 }
 
 // SendStartupMessage sends a startup notification to Slack
-func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version string, monitorCount int) error {
-	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Monitors: %d\n• Timestamp: %s",
-		version, monitorCount, time.Now().Format("2006-01-02 15:04:05"))
+func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version string, targetCount int) error {
+	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Targets: %d\n• Timestamp: %s",
+		version, targetCount, time.Now().Format("2006-01-02 15:04:05"))
 	
 	payload := map[string]interface{}{
 		"text": message,
@@ -497,8 +497,8 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 						"short": true,
 					},
 					{
-						"title": "Monitors",
-						"value": fmt.Sprintf("`%d`", monitorCount),
+						"title": "Targets",
+						"value": fmt.Sprintf("`%d`", targetCount),
 						"short": true,
 					},
 					{
@@ -537,7 +537,7 @@ func NewConsoleNotificationStrategy() *ConsoleNotificationStrategy {
 // HandleNotification handles incoming notifications by printing to console
 func (c *ConsoleNotificationStrategy) HandleNotification(ctx context.Context, notification *WebhookNotification) error {
 	fmt.Printf("📨 NOTIFICATION: %s\n", notification.Type)
-	fmt.Printf("   Monitor: %s\n", notification.Monitor)
+	fmt.Printf("   Target: %s\n", notification.Target)
 	fmt.Printf("   Message: %s\n", notification.Message)
 	fmt.Printf("   Timestamp: %s\n", notification.Timestamp.Format("2006-01-02 15:04:05"))
 	fmt.Println()
@@ -574,7 +574,7 @@ func (e *EmailNotificationStrategy) HandleNotification(ctx context.Context, noti
 	// This is a simplified implementation
 	// In a real implementation, you'd use an SMTP client to send emails
 	fmt.Printf("📧 EMAIL: Sending notification to %s\n", e.to)
-	fmt.Printf("   Subject: %s - %s\n", notification.Type, notification.Monitor)
+	fmt.Printf("   Subject: %s - %s\n", notification.Type, notification.Target)
 	fmt.Printf("   Message: %s\n", notification.Message)
 	return nil
 }

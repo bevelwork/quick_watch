@@ -1,6 +1,6 @@
-// Package main provides a command-line tool for monitoring URLs and services
+// Package main provides a command-line tool for targeting URLs and services
 // with configurable alerts and webhook notifications. This tool provides the
-// simplest possible monitoring with threshold-based alerting and external
+// simplest possible targeting with threshold-based alerting and external
 // webhook support.
 
 package main
@@ -20,22 +20,7 @@ import (
 	versionpkg "github.com/bevelwork/quick_watch/version"
 )
 
-// Colors are provided by quick_color
-
-// version is set at build time via ldflags
 var version = ""
-
-// StringSliceFlag implements flag.Value for string slices
-type StringSliceFlag []string
-
-func (s *StringSliceFlag) String() string {
-	return fmt.Sprintf("%v", *s)
-}
-
-func (s *StringSliceFlag) Set(value string) error {
-	*s = append(*s, value)
-	return nil
-}
 
 func main() {
 	// Print header
@@ -63,11 +48,11 @@ func main() {
 	args := os.Args[2:]
 
 	switch action {
-	case "edit":
+	case "targets", "edit":
 		handleEditCommand(args)
 	case "settings":
 		handleSettingsCommand(args)
-	case "notifiers":
+	case "alerts", "notifiers":
 		handleNotifiersCommand(args)
 	case "validate":
 		handleValidateCommand(args)
@@ -92,40 +77,34 @@ func main() {
 // showHelp displays the help information
 func showHelp() {
 	fmt.Printf("Usage: %s <action> [options]\n\n", os.Args[0])
-	fmt.Println("Actions:")
-	fmt.Println("  edit                    Edit monitors using $EDITOR")
-	fmt.Println("  settings                Edit global settings using $EDITOR")
-	fmt.Println("  notifiers               Edit notification configs using $EDITOR")
-	fmt.Println("  validate                Validate configuration syntax and alert strategies")
-	fmt.Println("  add <url>               Add a monitor")
-	fmt.Println("  rm <url>                Remove a monitor")
-	fmt.Println("  list                    List all monitors")
-	fmt.Println("  config <file>           Use YAML configuration file")
-	fmt.Println("  server                  Start in server mode")
+	fmt.Println("Simple Actions:")
+	fmt.Println("  add <url>     Add a target with default settings")
+	fmt.Println("  rm <url>      Remove a target")
+	fmt.Println("  list          List all targets")
+	fmt.Println("  server        Start the server")
 	fmt.Println("")
-	fmt.Println("Options:")
-	fmt.Println("  --state <file>          State file path (default: watch-state.yml)")
-	fmt.Println("  --method <method>       HTTP method (default: GET)")
-	fmt.Println("  --header <key:value>    HTTP headers (can be used multiple times)")
-	fmt.Println("  --threshold <seconds>   Down threshold in seconds (default: 30s)")
-	fmt.Println("  --webhook-port <port>    Webhook server port")
-	fmt.Println("  --webhook-path <path>    Webhook endpoint path (default: /webhook)")
-	fmt.Println("  --check-strategy <str>   Check strategy (default: http)")
-	fmt.Println("  --alert-strategy <str>  Alert strategy (default: console)")
+	fmt.Println("Advanced Actions:")
+	fmt.Println("  targets       Edit targets using $EDITOR")
+	fmt.Println("  settings      Edit global settings using $EDITOR")
+	fmt.Println("  alerts        Edit alert configs using $EDITOR")
+	fmt.Println("")
+	fmt.Println("Administrative Actions:")
+	fmt.Println("  validate      Validate configuration syntax and alert strategies")
+	fmt.Println("  config <file> Use YAML configuration file")
 	fmt.Println("")
 	fmt.Println("Examples:")
-	fmt.Printf("  %s edit\n", os.Args[0])
+	fmt.Printf("  %s targets\n", os.Args[0])
 	fmt.Printf("  %s add https://api.example.com/health --threshold 30s\n", os.Args[0])
 	fmt.Printf("  %s rm https://api.example.com/health\n", os.Args[0])
 	fmt.Printf("  %s list\n", os.Args[0])
-	fmt.Printf("  %s config monitors.yml\n", os.Args[0])
+	fmt.Printf("  %s config\n", os.Args[0])
 	fmt.Printf("  %s server --webhook-port 8080\n", os.Args[0])
 }
 
 // handleEditCommand handles the edit action
 func handleEditCommand(args []string) {
 	stateFile := getStateFile(args)
-	handleEditMonitors(stateFile)
+	handleEditTargets(stateFile)
 }
 
 // handleAddCommand handles the add action
@@ -143,7 +122,7 @@ func handleAddCommand(args []string) {
 	checkStrategy := getStringFlag(args[1:], "--check-strategy", "http")
 	alertStrategy := getStringFlag(args[1:], "--alert-strategy", "console")
 
-	handleAddMonitor(stateFile, url, method, headers, threshold, checkStrategy, alertStrategy)
+	handleAddTarget(stateFile, url, method, headers, threshold, checkStrategy, alertStrategy)
 }
 
 // handleRemoveCommand handles the rm action
@@ -155,13 +134,13 @@ func handleRemoveCommand(args []string) {
 
 	url := args[0]
 	stateFile := getStateFile(args[1:])
-	handleRemoveMonitor(stateFile, url)
+	handleRemoveTarget(stateFile, url)
 }
 
 // handleListCommand handles the list action
 func handleListCommand(args []string) {
 	stateFile := getStateFile(args)
-	handleListMonitors(stateFile)
+	handleListTargets(stateFile)
 }
 
 // handleConfigCommand handles the config action
@@ -243,8 +222,8 @@ func handleConfigMode(configFile string, webhookPort int, webhookPath string) {
 		log.Fatal(err)
 	}
 
-	// Create monitoring engine
-	engine := NewMonitoringEngine(config, nil)
+	// Create targeting engine
+	engine := NewTargetEngine(config, nil)
 
 	// Start webhook server if requested
 	var webhookServer *WebhookServer
@@ -255,13 +234,13 @@ func handleConfigMode(configFile string, webhookPort int, webhookPath string) {
 		}
 	}
 
-	// Start monitoring
+	// Start targeting
 	if err := engine.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
 
-	// Print monitoring status
-	printMonitoringStatus(engine)
+	// Print targeting status
+	printTargetStatus(engine)
 
 	// Wait for context cancellation
 	<-ctx.Done()
@@ -271,12 +250,12 @@ func handleConfigMode(configFile string, webhookPort int, webhookPath string) {
 		webhookServer.Stop(context.Background())
 	}
 
-	fmt.Println("Monitoring stopped.")
+	fmt.Println("Target stopped.")
 }
 
 // loadConfiguration loads configuration from YAML file or command line
-func loadConfiguration(configFile, url, method string, headers []string, threshold int, checkStrategy, alertStrategy string) (*MonitorConfig, error) {
-	var config *MonitorConfig
+func loadConfiguration(configFile, url, method string, headers []string, threshold int, checkStrategy, alertStrategy string) (*TargetConfig, error) {
+	var config *TargetConfig
 
 	// If config file is provided, load from YAML file
 	if configFile != "" {
@@ -290,24 +269,36 @@ func loadConfiguration(configFile, url, method string, headers []string, thresho
 			return nil, fmt.Errorf("failed to parse YAML config file: %v", err)
 		}
 	} else if url != "" {
-		// Create single monitor from command line
-		monitor := Monitor{
-			Name:          "CLI Monitor",
+		// Create single target from command line
+		target := Target{
+			Name:          "CLI Target",
 			URL:           url,
 			Method:        method,
 			Headers:       parseHeaders(headers),
 			Threshold:     threshold,
 			CheckStrategy: checkStrategy,
-			AlertStrategy: alertStrategy,
+			Alerts:        []string{alertStrategy},
 		}
-		config = &MonitorConfig{
-			Monitors: []Monitor{monitor},
+		config = &TargetConfig{
+			Targets: []Target{target},
 		}
 	} else {
 		return nil, fmt.Errorf("either --config or --url must be specified")
 	}
 
 	return config, nil
+}
+
+// StringSliceFlag implements flag.Value for string slices
+type StringSliceFlag []string
+
+func (s *StringSliceFlag) String() string {
+	return fmt.Sprintf("%v", *s)
+}
+
+func (s *StringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
 
 // parseHeaders parses header strings into a map
@@ -324,154 +315,142 @@ func parseHeaders(headers []string) map[string]string {
 	return result
 }
 
-// MonitorFields tracks which fields were explicitly set in the YAML
-type MonitorFields struct {
+// TargetFields tracks which fields were explicitly set in the YAML
+type TargetFields struct {
 	Method        bool
 	Headers       bool
 	Threshold     bool
 	StatusCodes   bool
 	SizeAlerts    bool
 	CheckStrategy bool
-	AlertStrategy bool
+	Alerts        bool
 }
 
-// cleanAllDefaults removes all default values from monitor configuration (for temp file creation)
-func cleanAllDefaults(monitor *Monitor) {
+// cleanAllDefaults removes all default values from target configuration (for temp file creation)
+func cleanAllDefaults(target *Target) {
 	appliedDefaults := []string{}
 
 	// Check and clean method
-	if monitor.Method == "GET" {
-		monitor.Method = ""
+	if target.Method == "GET" {
+		target.Method = ""
 		appliedDefaults = append(appliedDefaults, "method: GET")
 	}
 
 	// Check and clean headers
-	if len(monitor.Headers) == 0 {
-		monitor.Headers = nil
+	if len(target.Headers) == 0 {
+		target.Headers = nil
 		appliedDefaults = append(appliedDefaults, "headers: {}")
 	}
 
 	// Check and clean threshold
-	if monitor.Threshold == 30 {
-		monitor.Threshold = 0
+	if target.Threshold == 30 {
+		target.Threshold = 0
 		appliedDefaults = append(appliedDefaults, "threshold: 30s")
 	}
 
 	// Check and clean status codes
-	if len(monitor.StatusCodes) == 1 && monitor.StatusCodes[0] == "*" {
-		monitor.StatusCodes = nil
+	if len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
+		target.StatusCodes = nil
 		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
 	}
 
 	// Check and clean size alerts
-	if monitor.SizeAlerts.Enabled && monitor.SizeAlerts.HistorySize == 100 && monitor.SizeAlerts.Threshold == 0.5 {
-		monitor.SizeAlerts = SizeAlertConfig{}
+	if target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
+		target.SizeAlerts = SizeAlertConfig{}
 		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
 	}
 
 	// Check and clean check strategy
-	if monitor.CheckStrategy == "http" {
-		monitor.CheckStrategy = ""
+	if target.CheckStrategy == "http" {
+		target.CheckStrategy = ""
 		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Check and clean alert strategy
-	if monitor.AlertStrategy == "console" {
-		monitor.AlertStrategy = ""
-		appliedDefaults = append(appliedDefaults, "alert_strategy: console")
 	}
 
 	// Show INFO message if any defaults were applied
 	if len(appliedDefaults) > 0 {
 		fmt.Printf("%s Applied defaults for %s: %s\n",
 			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			monitor.Name,
+			target.Name,
 			strings.Join(appliedDefaults, ", "))
 	}
 }
 
-// cleanDefaults removes default values from monitor configuration and shows INFO messages
+// cleanDefaults removes default values from target configuration and shows INFO messages
 // It only cleans fields that were explicitly set to default values
-func cleanDefaults(monitor *Monitor, fields *MonitorFields) {
+func cleanDefaults(target *Target, fields *TargetFields) {
 	appliedDefaults := []string{}
 
 	// Check and clean method (only if it was explicitly set)
-	if fields.Method && monitor.Method == "GET" {
-		monitor.Method = ""
+	if fields.Method && target.Method == "GET" {
+		target.Method = ""
 		appliedDefaults = append(appliedDefaults, "method: GET")
 	}
 
 	// Check and clean headers (only if it was explicitly set)
-	if fields.Headers && len(monitor.Headers) == 0 {
-		monitor.Headers = nil
+	if fields.Headers && len(target.Headers) == 0 {
+		target.Headers = nil
 		appliedDefaults = append(appliedDefaults, "headers: {}")
 	}
 
 	// Check and clean threshold (only if it was explicitly set)
-	if fields.Threshold && monitor.Threshold == 30 {
-		monitor.Threshold = 0
+	if fields.Threshold && target.Threshold == 30 {
+		target.Threshold = 0
 		appliedDefaults = append(appliedDefaults, "threshold: 30s")
 	}
 
 	// Check and clean status codes (only if it was explicitly set)
-	if fields.StatusCodes && len(monitor.StatusCodes) == 1 && monitor.StatusCodes[0] == "*" {
-		monitor.StatusCodes = nil
+	if fields.StatusCodes && len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
+		target.StatusCodes = nil
 		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
 	}
 
 	// Check and clean size alerts (only if it was explicitly set)
-	if fields.SizeAlerts && monitor.SizeAlerts.Enabled && monitor.SizeAlerts.HistorySize == 100 && monitor.SizeAlerts.Threshold == 0.5 {
-		monitor.SizeAlerts = SizeAlertConfig{}
+	if fields.SizeAlerts && target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
+		target.SizeAlerts = SizeAlertConfig{}
 		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
 	}
 
 	// Check and clean check strategy (only if it was explicitly set)
-	if fields.CheckStrategy && monitor.CheckStrategy == "http" {
-		monitor.CheckStrategy = ""
+	if fields.CheckStrategy && target.CheckStrategy == "http" {
+		target.CheckStrategy = ""
 		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Check and clean alert strategy (only if it was explicitly set)
-	if fields.AlertStrategy && monitor.AlertStrategy == "console" {
-		monitor.AlertStrategy = ""
-		appliedDefaults = append(appliedDefaults, "alert_strategy: console")
 	}
 
 	// Show INFO message if any defaults were applied
 	if len(appliedDefaults) > 0 {
 		fmt.Printf("%s Applied defaults for %s: %s\n",
 			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			monitor.Name,
+			target.Name,
 			strings.Join(appliedDefaults, ", "))
 	}
 }
 
 // applyDefaultsAfterClean applies default values after cleaning
-func applyDefaultsAfterClean(monitor *Monitor) {
-	if monitor.Method == "" {
-		monitor.Method = "GET"
+func applyDefaultsAfterClean(target *Target) {
+	if target.Method == "" {
+		target.Method = "GET"
 	}
-	if monitor.Headers == nil {
-		monitor.Headers = make(map[string]string)
+	if target.Headers == nil {
+		target.Headers = make(map[string]string)
 	}
-	if monitor.Threshold == 0 {
-		monitor.Threshold = 30
+	if target.Threshold == 0 {
+		target.Threshold = 30
 	}
-	if len(monitor.StatusCodes) == 0 {
-		monitor.StatusCodes = []string{"*"}
+	if len(target.StatusCodes) == 0 {
+		target.StatusCodes = []string{"*"}
 	}
-	if monitor.SizeAlerts.HistorySize == 0 {
-		monitor.SizeAlerts = SizeAlertConfig{
+	if target.SizeAlerts.HistorySize == 0 {
+		target.SizeAlerts = SizeAlertConfig{
 			Enabled:     true,
 			HistorySize: 100,
 			Threshold:   0.5,
 		}
 	}
-	if monitor.CheckStrategy == "" {
-		monitor.CheckStrategy = "http"
+	if target.CheckStrategy == "" {
+		target.CheckStrategy = "http"
 	}
-	if monitor.AlertStrategy == "" {
-		monitor.AlertStrategy = "console"
+	if target.AlertStrategy == "" {
+		target.AlertStrategy = "console"
 	}
 }
 
@@ -480,14 +459,14 @@ func printHeader() {
 	fmt.Printf("%s %s\n", qc.Colorize("🚀 Quick Watch", qc.ColorCyan), qc.Colorize(resolveVersion(), qc.ColorWhite))
 }
 
-// printMonitoringStatus prints the current monitoring status
-func printMonitoringStatus(engine *MonitoringEngine) {
-	monitors := engine.GetMonitorStatus()
+// printTargetStatus prints the current targeting status
+func printTargetStatus(engine *TargetEngine) {
+	targets := engine.GetTargetStatus()
 
-	fmt.Printf("\n%s\n", qc.Colorize("📊 Monitoring Status", qc.ColorBlue))
-	fmt.Printf("%s %s\n", qc.Colorize("Active monitors:", qc.ColorCyan), qc.Colorize(fmt.Sprintf("%d", len(monitors)), qc.ColorWhite))
+	fmt.Printf("\n%s\n", qc.Colorize("📊 Target Status", qc.ColorBlue))
+	fmt.Printf("%s %s\n", qc.Colorize("Active targets:", qc.ColorCyan), qc.Colorize(fmt.Sprintf("%d", len(targets)), qc.ColorWhite))
 
-	for i, state := range monitors {
+	for i, state := range targets {
 		// Alternate row colors for better readability
 		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
 
@@ -504,8 +483,8 @@ func printMonitoringStatus(engine *MonitoringEngine) {
 		entry := fmt.Sprintf(
 			"  %s %-30s %s [%s %s]",
 			qc.Colorize(fmt.Sprintf("%d.", i+1), qc.ColorYellow),
-			state.Monitor.Name,
-			state.Monitor.URL,
+			state.Target.Name,
+			state.Target.URL,
 			statusIcon,
 			qc.Colorize(statusText, statusColor),
 		)
@@ -521,7 +500,7 @@ func printMonitoringStatus(engine *MonitoringEngine) {
 		}
 	}
 
-	fmt.Printf("\n%s\n", qc.Colorize("🚀 Monitoring started. Press Ctrl+C to stop.", qc.ColorYellow))
+	fmt.Printf("\n%s\n", qc.Colorize("🚀 Target started. Press Ctrl+C to stop.", qc.ColorYellow))
 }
 
 // resolveVersion returns the version string. If ldflags-injected version is empty,
@@ -582,8 +561,8 @@ func handleServerMode(stateFile string) {
 	fmt.Println("Server stopped.")
 }
 
-// handleAddMonitor adds a monitor to the state file
-func handleAddMonitor(stateFile, url, method string, headers []string, threshold int, checkStrategy, alertStrategy string) {
+// handleAddTarget adds a target to the state file
+func handleAddTarget(stateFile, url, method string, headers []string, threshold int, checkStrategy, alertStrategy string) {
 	stateManager := NewStateManager(stateFile)
 
 	// Load existing state
@@ -591,9 +570,9 @@ func handleAddMonitor(stateFile, url, method string, headers []string, threshold
 		log.Printf("Warning: Could not load existing state: %v", err)
 	}
 
-	// Create monitor
-	monitor := Monitor{
-		Name:        fmt.Sprintf("Monitor-%s", url),
+	// Create target
+	target := Target{
+		Name:        fmt.Sprintf("Target-%s", url),
 		URL:         url,
 		Method:      method,
 		Headers:     parseHeaders(headers),
@@ -605,30 +584,31 @@ func handleAddMonitor(stateFile, url, method string, headers []string, threshold
 			Threshold:   0.5, // 50% change threshold
 		},
 		CheckStrategy: checkStrategy,
-		AlertStrategy: alertStrategy,
+		// Prefer new multi-alerts field, but preserve legacy single field via applyDefaultsAfterClean
+		Alerts: []string{alertStrategy},
 	}
 
 	// Clean defaults and show INFO messages
-	cleanAllDefaults(&monitor)
+	cleanAllDefaults(&target)
 
 	// Apply defaults for runtime
-	applyDefaultsAfterClean(&monitor)
+	applyDefaultsAfterClean(&target)
 
-	// Add monitor
-	if err := stateManager.AddMonitor(monitor); err != nil {
+	// Add target
+	if err := stateManager.AddTarget(target); err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("%s Added monitor: %s\n", qc.Colorize("✅ Success:", qc.ColorGreen), url)
-	fmt.Printf("  URL: %s\n", monitor.URL)
-	fmt.Printf("  Method: %s\n", monitor.Method)
-	fmt.Printf("  Threshold: %d seconds\n", monitor.Threshold)
-	fmt.Printf("  Check Strategy: %s\n", monitor.CheckStrategy)
-	fmt.Printf("  Alert Strategy: %s\n", monitor.AlertStrategy)
+	fmt.Printf("%s Added target: %s\n", qc.Colorize("✅ Success:", qc.ColorGreen), url)
+	fmt.Printf("  URL: %s\n", target.URL)
+	fmt.Printf("  Method: %s\n", target.Method)
+	fmt.Printf("  Threshold: %d seconds\n", target.Threshold)
+	fmt.Printf("  Check Strategy: %s\n", target.CheckStrategy)
+	fmt.Printf("  Alert Strategy: %s\n", target.AlertStrategy)
 }
 
-// handleRemoveMonitor removes a monitor from the state file
-func handleRemoveMonitor(stateFile, url string) {
+// handleRemoveTarget removes a target from the state file
+func handleRemoveTarget(stateFile, url string) {
 	stateManager := NewStateManager(stateFile)
 
 	// Load existing state
@@ -636,16 +616,16 @@ func handleRemoveMonitor(stateFile, url string) {
 		log.Fatal(err)
 	}
 
-	// Remove monitor
-	if err := stateManager.RemoveMonitor(url); err != nil {
+	// Remove target
+	if err := stateManager.RemoveTarget(url); err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("%s Removed monitor: %s\n", qc.Colorize("🗑️ Success:", qc.ColorGreen), url)
+	fmt.Printf("%s Removed target: %s\n", qc.Colorize("🗑️ Success:", qc.ColorGreen), url)
 }
 
-// handleListMonitors lists all monitors in the state file
-func handleListMonitors(stateFile string) {
+// handleListTargets lists all targets in the state file
+func handleListTargets(stateFile string) {
 	stateManager := NewStateManager(stateFile)
 
 	// Load existing state
@@ -653,28 +633,33 @@ func handleListMonitors(stateFile string) {
 		log.Printf("Warning: Could not load existing state: %v", err)
 	}
 
-	monitors := stateManager.ListMonitors()
+	targets := stateManager.ListTargets()
 
-	if len(monitors) == 0 {
-		fmt.Printf("%s No monitors configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+	if len(targets) == 0 {
+		fmt.Printf("%s No targets configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
 		return
 	}
 
-	fmt.Printf("%s Configured Monitors (%d):\n", qc.Colorize("📋 Info:", qc.ColorBlue), len(monitors))
+	fmt.Printf("%s Configured Targets (%d):\n", qc.Colorize("📋 Info:", qc.ColorBlue), len(targets))
 	fmt.Println()
 
 	i := 0
-	for _, monitor := range monitors {
+	for _, target := range targets {
 		// Alternate row colors for better readability
 		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
 
 		entry := fmt.Sprintf(
 			"%3d. %-30s %s",
-			i+1, monitor.Name, monitor.URL,
+			i+1, target.Name, target.URL,
 		)
 		fmt.Println(qc.Colorize(entry, rowColor))
+		// Display alert strategies (multiple supported)
+		alerts := strings.Join(target.Alerts, ", ")
+		if alerts == "" && target.AlertStrategy != "" {
+			alerts = target.AlertStrategy
+		}
 		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
-			monitor.Method, monitor.Threshold, monitor.CheckStrategy, monitor.AlertStrategy)
+			target.Method, target.Threshold, target.CheckStrategy, alerts)
 		i++
 	}
 }
@@ -741,8 +726,8 @@ func handleNotifiersCommand(args []string) {
 		os.Exit(1)
 	}
 
-	// Edit notifiers
-	editNotifiers(stateManager)
+	// Edit alerts
+	editAlerts(stateManager)
 }
 
 // handleValidateCommand handles the validate command

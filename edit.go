@@ -12,8 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// handleEditMonitors opens the state file in the user's editor for modification
-func handleEditMonitors(stateFile string) {
+// handleEditTargets opens the state file in the user's editor for modification
+func handleEditTargets(stateFile string) {
 	stateManager := NewStateManager(stateFile)
 
 	// Load existing state
@@ -79,138 +79,207 @@ func handleEditMonitors(stateFile string) {
 	}
 
 	// Parse the modified configuration (simplified structure)
-	var monitorsData map[string]interface{}
-	if err := yaml.Unmarshal(modifiedData, &monitorsData); err != nil {
+	var targetsData map[string]interface{}
+	if err := yaml.Unmarshal(modifiedData, &targetsData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
 	}
 
-	// Extract monitors from the simplified structure
-	monitorsMap := make(map[string]Monitor)
-	monitorFieldsMap := make(map[string]*MonitorFields)
-	if monitorsInterface, exists := monitorsData["monitors"]; exists {
-		if monitorsMapInterface, ok := monitorsInterface.(map[string]interface{}); ok {
-			for url, monitorInterface := range monitorsMapInterface {
-				if monitorMap, ok := monitorInterface.(map[string]interface{}); ok {
-					monitor := Monitor{}
-					fields := &MonitorFields{}
+	// Extract targets (new) or targets (legacy) from the simplified structure
+	targetsMap := make(map[string]Target)
+	targetFieldsMap := make(map[string]*TargetFields)
+	key := "targets"
+	targetsInterface, exists := targetsData[key]
+	if !exists {
+		key = "targets" // legacy fallback
+		targetsInterface = targetsData[key]
+	}
+	if targetsInterface != nil {
+		// Accept either map[string]Target-like or []Target-like entries
+		if targetsMapInterface, ok := targetsInterface.(map[string]interface{}); ok {
+			for url, targetInterface := range targetsMapInterface {
+				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+					target := Target{}
+					fields := &TargetFields{}
 
-					if name, ok := monitorMap["name"].(string); ok {
-						monitor.Name = name
+					if name, ok := targetMap["name"].(string); ok {
+						target.Name = name
 					}
-					if urlVal, ok := monitorMap["url"].(string); ok {
-						monitor.URL = urlVal
+					if urlVal, ok := targetMap["url"].(string); ok {
+						target.URL = urlVal
 					}
-					if method, ok := monitorMap["method"].(string); ok {
-						monitor.Method = method
+					if method, ok := targetMap["method"].(string); ok {
+						target.Method = method
 						fields.Method = true
 					}
-					if threshold, ok := monitorMap["threshold"].(int); ok {
-						monitor.Threshold = threshold
+					if threshold, ok := targetMap["threshold"].(int); ok {
+						target.Threshold = threshold
 						fields.Threshold = true
 					}
-					if statusCodes, ok := monitorMap["status_codes"].([]interface{}); ok {
+					if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
 						fields.StatusCodes = true
 						for _, code := range statusCodes {
 							if codeStr, ok := code.(string); ok {
-								monitor.StatusCodes = append(monitor.StatusCodes, codeStr)
+								target.StatusCodes = append(target.StatusCodes, codeStr)
 							}
 						}
 					}
-					if sizeAlerts, ok := monitorMap["size_alerts"].(map[string]interface{}); ok {
+					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
 						fields.SizeAlerts = true
 						if enabled, ok := sizeAlerts["enabled"].(bool); ok {
-							monitor.SizeAlerts.Enabled = enabled
+							target.SizeAlerts.Enabled = enabled
 						}
 						if historySize, ok := sizeAlerts["history_size"].(int); ok {
-							monitor.SizeAlerts.HistorySize = historySize
+							target.SizeAlerts.HistorySize = historySize
 						}
 						if threshold, ok := sizeAlerts["threshold"].(float64); ok {
-							monitor.SizeAlerts.Threshold = threshold
+							target.SizeAlerts.Threshold = threshold
 						}
 					}
-					if checkStrategy, ok := monitorMap["check_strategy"].(string); ok {
-						monitor.CheckStrategy = checkStrategy
+					if checkStrategy, ok := targetMap["check_strategy"].(string); ok {
+						target.CheckStrategy = checkStrategy
 						fields.CheckStrategy = true
-					}
-					if alertStrategy, ok := monitorMap["alert_strategy"].(string); ok {
-						monitor.AlertStrategy = alertStrategy
-						fields.AlertStrategy = true
 					}
 
 					// Check if headers was explicitly set (even if empty)
-					if _, headersExists := monitorMap["headers"]; headersExists {
+					if _, headersExists := targetMap["headers"]; headersExists {
 						fields.Headers = true
-						if headers, ok := monitorMap["headers"].(map[string]interface{}); ok {
-							monitor.Headers = make(map[string]string)
+						if headers, ok := targetMap["headers"].(map[string]interface{}); ok {
+							target.Headers = make(map[string]string)
 							for k, v := range headers {
 								if vStr, ok := v.(string); ok {
-									monitor.Headers[k] = vStr
+									target.Headers[k] = vStr
 								}
 							}
 						}
 					}
 
-					monitorsMap[url] = monitor
-					monitorFieldsMap[url] = fields
+					// If URL key is empty, use target.URL as key
+					keyURL := url
+					if keyURL == "" {
+						keyURL = target.URL
+					}
+					targetsMap[keyURL] = target
+					targetFieldsMap[url] = fields
+				}
+			}
+		} else if targetsSlice, ok := targetsInterface.([]interface{}); ok {
+			for _, targetInterface := range targetsSlice {
+				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+					target := Target{}
+					fields := &TargetFields{}
+
+					if name, ok := targetMap["name"].(string); ok {
+						target.Name = name
+					}
+					if urlVal, ok := targetMap["url"].(string); ok {
+						target.URL = urlVal
+					}
+					if method, ok := targetMap["method"].(string); ok {
+						target.Method = method
+						fields.Method = true
+					}
+					if threshold, ok := targetMap["threshold"].(int); ok {
+						target.Threshold = threshold
+						fields.Threshold = true
+					}
+					if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+						fields.StatusCodes = true
+						for _, code := range statusCodes {
+							if codeStr, ok := code.(string); ok {
+								target.StatusCodes = append(target.StatusCodes, codeStr)
+							}
+						}
+					}
+					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
+						fields.SizeAlerts = true
+						if enabled, ok := sizeAlerts["enabled"].(bool); ok {
+							target.SizeAlerts.Enabled = enabled
+						}
+						if historySize, ok := sizeAlerts["history_size"].(int); ok {
+							target.SizeAlerts.HistorySize = historySize
+						}
+						if threshold, ok := sizeAlerts["threshold"].(float64); ok {
+							target.SizeAlerts.Threshold = threshold
+						}
+					}
+					if checkStrategy, ok := targetMap["check_strategy"].(string); ok {
+						target.CheckStrategy = checkStrategy
+						fields.CheckStrategy = true
+					}
+
+					if target.URL != "" {
+						targetsMap[target.URL] = target
+						targetFieldsMap[target.URL] = fields
+					}
 				}
 			}
 		}
 	}
 
-	// Validate monitors (strict validation, no defaults applied)
-	if err := validateMonitors(monitorsMap, stateManager); err != nil {
-		fmt.Printf("%s Invalid monitors: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+	// Fallback: if nothing parsed, try robust parser that accepts multiple shapes
+	if len(targetsMap) == 0 {
+		if parsed, parsedFields, err := parseTargetsFromYAML(modifiedData); err == nil {
+			if len(parsed) > 0 {
+				targetsMap = parsed
+				targetFieldsMap = parsedFields
+			}
+		}
+	}
+
+	// Validate targets (strict validation, no defaults applied)
+	if err := validateTargets(targetsMap, stateManager); err != nil {
+		fmt.Printf("%s Invalid targets: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
 		return
 	}
 
 	// Apply defaults for missing values
-	applyDefaults(monitorsMap)
+	applyDefaults(targetsMap)
 
 	// Clean defaults for explicitly set fields
-	for url, monitor := range monitorsMap {
-		if fields, exists := monitorFieldsMap[url]; exists {
-			cleanDefaults(&monitor, fields)
-			monitorsMap[url] = monitor
+	for url, target := range targetsMap {
+		if fields, exists := targetFieldsMap[url]; exists {
+			cleanDefaults(&target, fields)
+			targetsMap[url] = target
 		}
 	}
 
 	// Save the changes by updating the state manager
-	for url, monitor := range monitorsMap {
-		if err := stateManager.AddMonitor(monitor); err != nil {
-			fmt.Printf("%s Failed to save monitor %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
+	for url, target := range targetsMap {
+		if err := stateManager.AddTarget(target); err != nil {
+			fmt.Printf("%s Failed to save target %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
 			return
 		}
 	}
 
 	// Show summary
 	fmt.Printf("\n%s Edit Summary\n", qc.Colorize("📝 =", qc.ColorBlue))
-	fmt.Printf("Monitors configured: %d\n", len(monitorsMap))
+	fmt.Printf("Targets configured: %d\n", len(targetsMap))
 	fmt.Println()
 
-	if len(monitorsMap) == 0 {
-		fmt.Printf("%s No monitors configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+	if len(targetsMap) == 0 {
+		fmt.Printf("%s No targets configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
 		return
 	}
 
-	fmt.Printf("%s Configured Monitors:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
+	fmt.Printf("%s Configured Targets:\n", qc.Colorize("📋 Info:", qc.ColorBlue))
 	fmt.Println()
 
 	i := 0
-	for _, monitor := range monitorsMap {
+	for _, target := range targetsMap {
 		// Alternate row colors for better readability
 		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
 
 		entry := fmt.Sprintf(
 			"  %s %-30s %s",
 			qc.Colorize(fmt.Sprintf("%d.", i+1), qc.ColorYellow),
-			monitor.Name,
-			monitor.URL,
+			target.Name,
+			target.URL,
 		)
 		fmt.Println(qc.Colorize(entry, rowColor))
 		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
-			monitor.Method, monitor.Threshold, monitor.CheckStrategy, monitor.AlertStrategy)
+			target.Method, target.Threshold, target.CheckStrategy, strings.Join(target.Alerts, ", "))
 		i++
 	}
 
@@ -226,29 +295,31 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 	}
 	defer tempFile.Close()
 
-	// Get current monitors
-	monitors := stateManager.ListMonitors()
+	// Get current targets
+	targets := stateManager.ListTargets()
 
-	// Create simplified YAML structure with only monitors
-	monitorsOnly := map[string]interface{}{
-		"monitors": make(map[string]Monitor),
-	}
-
-	// Copy monitors and clean defaults
-	for url, monitor := range monitors {
-		// Clean defaults from the monitor before adding to YAML
-		cleanAllDefaults(&monitor)
-		monitorsOnly["monitors"].(map[string]Monitor)[url] = monitor
+	// Create simplified YAML: top-level map with target name keys and minimal fields
+	simplified := make(map[string]map[string]interface{})
+	for _, target := range targets {
+		// Prefer using existing name, fallback to URL
+		name := target.Name
+		if strings.TrimSpace(name) == "" {
+			name = target.URL
+		}
+		entry := map[string]interface{}{
+			"url": target.URL,
+		}
+		simplified[name] = entry
 	}
 
 	// Marshal to YAML
-	data, err := yaml.Marshal(monitorsOnly)
+	data, err := yaml.Marshal(simplified)
 	if err != nil {
 		return "", err
 	}
 
-	// Add helpful comments
-	commentedData := addEditComments(data)
+	// Add helpful comments tailored to simplified format
+	commentedData := addEditCommentsForSimplified(data)
 
 	// Write to temp file
 	if _, err := tempFile.Write(commentedData); err != nil {
@@ -262,15 +333,15 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 func addEditComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
 	commentedLines := []string{
-		"# To remove a monitor: delete its entry",
-		"# To modify a monitor: edit its properties",
-		"# To add a monitor: add a object with the list.",
+		"# To remove a target: delete its entry",
+		"# To modify a target: edit its properties",
+		"# To add a target: add an object to the list.",
 		"# Required fields: name, url",
-		"# Alert strategies: console, slack",
+		"# Alert alerts: console, slack",
 		"#",
 		"# Full example with all options:",
 		"#   comprehensive-example:",
-		"#     name: \"Comprehensive Monitor\"",
+		"#     name: \"Comprehensive Target\"",
 		"#     url: \"https://api.example.com/health\"",
 		"#     method: \"GET\"                    # HTTP method (default: GET)",
 		"#     headers:                          # Custom headers (default: {})",
@@ -283,10 +354,37 @@ func addEditComments(data []byte) []byte {
 		"#       history_size: 100",
 		"#       threshold: 0.5",
 		"#     check_strategy: \"http\"           # Check strategy (default: http)",
-		"#     alert_strategy: \"console\"        # Alert strategy (default: console)",
+		"#     alerts: \"console\"        # Alert strategy (default: console)",
 		"",
 	}
 
+	commentedLines = append(commentedLines, lines...)
+	return []byte(strings.Join(commentedLines, "\n"))
+}
+
+// addEditCommentsForSimplified adds comments for the simplified targets editor
+func addEditCommentsForSimplified(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	commentedLines := []string{
+		"# Edit targets below. Each key is the target name.",
+		"# Only 'url' is required. Other fields are optional and have defaults.",
+		"#",
+		"# Full example (defaults shown; omit to use defaults):",
+		"# my-target:",
+		"#   url: https://bevel.work              # REQUIRED",
+		"#   method: GET                          # default: GET",
+		"#   headers:                             # default: {} (none)",
+		"#     Authorization: Bearer <token>",
+		"#   threshold: 30                        # seconds; default: 30",
+		"#   status_codes: ['*']                 # accepts any by default",
+		"#   size_alerts:                         # page size change alerts (enabled by default)",
+		"#     enabled: true",
+		"#     history_size: 100",
+		"#     threshold: 0.5                     # 50% change",
+		"#   check_strategy: http                 # default: http",
+		"#   alerts: [console]          # preferred (supports multiple)",
+		"",
+	}
 	commentedLines = append(commentedLines, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
@@ -297,8 +395,8 @@ func validateYAML(data []byte) error {
 	return yaml.Unmarshal(data, &temp)
 }
 
-// validateMonitors validates monitor configurations without applying defaults
-func validateMonitors(monitors map[string]Monitor, stateManager *StateManager) error {
+// validateTargets validates target configurations without applying defaults
+func validateTargets(targets map[string]Target, stateManager *StateManager) error {
 	validHTTPMethods := map[string]bool{
 		"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
 		"HEAD": true, "OPTIONS": true, "TRACE": true, "CONNECT": true,
@@ -308,93 +406,85 @@ func validateMonitors(monitors map[string]Monitor, stateManager *StateManager) e
 		"http": true,
 	}
 
-	// Get valid alert strategies from notifiers
-	validAlertStrategies := make(map[string]bool)
+	// Get valid alert alerts from alerts
+	validAlerts := make(map[string]bool)
 	// Add default console strategy
-	validAlertStrategies["console"] = true
+	validAlerts["console"] = true
 
-	// Add notifier-based strategies
+	// Add alert-based alerts
 	if stateManager != nil {
-		notifiers := stateManager.GetNotifiers()
-		for name, notifier := range notifiers {
-			if notifier.Enabled {
-				validAlertStrategies[name] = true
+		alerts := stateManager.GetAlerts()
+		for name, alert := range alerts {
+			if alert.Enabled {
+				validAlerts[name] = true
 			}
 		}
 	}
 
-	for url, monitor := range monitors {
+	for url, target := range targets {
 		// Required fields validation
-		if monitor.URL == "" {
-			return fmt.Errorf("monitor %s: url is REQUIRED and cannot be empty", url)
+		if target.URL == "" {
+			return fmt.Errorf("target %s: url is REQUIRED and cannot be empty", url)
 		}
-		if monitor.Name == "" {
-			return fmt.Errorf("monitor %s: name is REQUIRED and cannot be empty", url)
+		if target.Name == "" {
+			return fmt.Errorf("target %s: name is REQUIRED and cannot be empty", url)
 		}
 
 		// Validate URL format (basic check)
-		if !strings.HasPrefix(monitor.URL, "http://") && !strings.HasPrefix(monitor.URL, "https://") {
-			return fmt.Errorf("monitor %s: url must start with http:// or https://", url)
+		if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+			return fmt.Errorf("target %s: url must start with http:// or https://", url)
 		}
 
 		// Validate method if provided (don't apply default, just validate)
-		if monitor.Method != "" && !validHTTPMethods[strings.ToUpper(monitor.Method)] {
-			return fmt.Errorf("monitor %s: invalid method '%s', must be one of: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, TRACE, CONNECT", url, monitor.Method)
+		if target.Method != "" && !validHTTPMethods[strings.ToUpper(target.Method)] {
+			return fmt.Errorf("target %s: invalid method '%s', must be one of: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, TRACE, CONNECT", url, target.Method)
 		}
 
 		// Validate threshold if provided (don't apply default, just validate)
-		if monitor.Threshold < 0 {
-			return fmt.Errorf("monitor %s: threshold must be a positive integer, got %d", url, monitor.Threshold)
+		if target.Threshold < 0 {
+			return fmt.Errorf("target %s: threshold must be a positive integer, got %d", url, target.Threshold)
 		}
 
 		// Validate check strategy if provided (don't apply default, just validate)
-		if monitor.CheckStrategy != "" && !validCheckStrategies[monitor.CheckStrategy] {
-			return fmt.Errorf("monitor %s: invalid check_strategy '%s', must be one of: http", url, monitor.CheckStrategy)
-		}
-
-		// Validate alert strategy if provided (don't apply default, just validate)
-		if monitor.AlertStrategy != "" && !validAlertStrategies[monitor.AlertStrategy] {
-			return fmt.Errorf("monitor %s: invalid alert_strategy '%s', must be one of: console", url, monitor.AlertStrategy)
+		if target.CheckStrategy != "" && !validCheckStrategies[target.CheckStrategy] {
+			return fmt.Errorf("target %s: invalid check_strategy '%s', must be one of: http", url, target.CheckStrategy)
 		}
 	}
 	return nil
 }
 
-// applyDefaults applies default values to monitors where properties are missing
-func applyDefaults(monitors map[string]Monitor) {
-	for url, monitor := range monitors {
+// applyDefaults applies default values to targets where properties are missing
+func applyDefaults(targets map[string]Target) {
+	for url, target := range targets {
 		// Clean defaults and show INFO messages
-		cleanAllDefaults(&monitor)
+		cleanAllDefaults(&target)
 
 		// Apply defaults only for missing values
-		if monitor.Method == "" {
-			monitor.Method = "GET"
+		if target.Method == "" {
+			target.Method = "GET"
 		}
-		if monitor.Threshold == 0 {
-			monitor.Threshold = 30
+		if target.Threshold == 0 {
+			target.Threshold = 30
 		}
-		if monitor.CheckStrategy == "" {
-			monitor.CheckStrategy = "http"
+		if target.CheckStrategy == "" {
+			target.CheckStrategy = "http"
 		}
-		if monitor.AlertStrategy == "" {
-			monitor.AlertStrategy = "console"
+		if target.Headers == nil {
+			target.Headers = make(map[string]string)
 		}
-		if monitor.Headers == nil {
-			monitor.Headers = make(map[string]string)
+		if len(target.StatusCodes) == 0 {
+			target.StatusCodes = []string{"*"}
 		}
-		if len(monitor.StatusCodes) == 0 {
-			monitor.StatusCodes = []string{"*"}
-		}
-		if monitor.SizeAlerts.HistorySize == 0 {
-			monitor.SizeAlerts = SizeAlertConfig{
+		if target.SizeAlerts.HistorySize == 0 {
+			target.SizeAlerts = SizeAlertConfig{
 				Enabled:     true,
 				HistorySize: 100,
 				Threshold:   0.5, // 50% change threshold
 			}
 		}
 
-		// Update the map with the modified monitor
-		monitors[url] = monitor
+		// Update the map with the modified target
+		targets[url] = target
 	}
 }
 
@@ -455,8 +545,8 @@ func editSettings(stateManager *StateManager) {
 		CheckInterval:    5,
 		DefaultThreshold: 30,
 		Startup: StartupConfig{
-			Enabled:   true,
-			Notifiers: []string{"console"},
+			Enabled: true,
+			Alerts:  []string{"console"},
 		},
 	}
 
@@ -478,24 +568,32 @@ func editSettings(stateManager *StateManager) {
 		if enabled, ok := startupData["enabled"].(bool); ok {
 			settings.Startup.Enabled = enabled
 		}
-		if notifiers, ok := startupData["notifiers"].([]interface{}); ok {
-			settings.Startup.Notifiers = make([]string, len(notifiers))
-			for i, notifier := range notifiers {
-				if notifierStr, ok := notifier.(string); ok {
-					settings.Startup.Notifiers[i] = notifierStr
+		// New key: alerts
+		if al, ok := startupData["alerts"].([]interface{}); ok {
+			settings.Startup.Alerts = make([]string, 0, len(al))
+			for _, a := range al {
+				if s, ok := a.(string); ok {
+					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
+				}
+			}
+		} else if alerts, ok := startupData["alerts"].([]interface{}); ok { // legacy
+			settings.Startup.Alerts = make([]string, 0, len(alerts))
+			for _, alert := range alerts {
+				if alertStr, ok := alert.(string); ok {
+					settings.Startup.Alerts = append(settings.Startup.Alerts, alertStr)
 				}
 			}
 		}
-		if checkAllMonitors, ok := startupData["check_all_monitors"].(bool); ok {
-			settings.Startup.CheckAllMonitors = checkAllMonitors
+		if checkAllTargets, ok := startupData["check_all_targets"].(bool); ok {
+			settings.Startup.CheckAllTargets = checkAllTargets
 		}
 	}
 
 	// Handle legacy startup_message setting for backward compatibility
 	if startupMessage, ok := settingsData["startup_message"].(bool); ok {
 		settings.Startup.Enabled = startupMessage
-		if startupMessage && len(settings.Startup.Notifiers) == 0 {
-			settings.Startup.Notifiers = []string{"console"}
+		if startupMessage && len(settings.Startup.Alerts) == 0 {
+			settings.Startup.Alerts = []string{"console"}
 		}
 	}
 
@@ -534,9 +632,9 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 		"check_interval":    settings.CheckInterval,
 		"default_threshold": settings.DefaultThreshold,
 		"startup": map[string]interface{}{
-			"enabled":            settings.Startup.Enabled,
-			"notifiers":          settings.Startup.Notifiers,
-			"check_all_monitors": settings.Startup.CheckAllMonitors,
+			"enabled":           settings.Startup.Enabled,
+			"alerts":            settings.Startup.Alerts,
+			"check_all_targets": settings.Startup.CheckAllTargets,
 		},
 	}
 
@@ -566,12 +664,12 @@ func addSettingsComments(data []byte) []byte {
 		"#",
 		"# webhook_port: Port for webhook server (default: 8080)",
 		"# webhook_path: Path for webhook endpoint (default: /webhook)",
-		"# check_interval: How often to check monitors in seconds (default: 5s)",
+		"# check_interval: How often to check targets in seconds (default: 5s)",
 		"# default_threshold: Default down threshold in seconds (default: 30s)",
 		"# startup:",
 		"#   enabled: true/false (default: true)",
-		"#   notifiers: [\"console\", \"slack-alerts\"] (default: [\"console\"])",
-		"#   check_all_monitors: true/false (default: false)",
+		"#   alerts: [\"console\", \"slack-alerts\"] (default: [\"console\"])",
+		"#   check_all_targets: true/false (default: false)",
 		"#",
 		"",
 	}
@@ -602,20 +700,20 @@ func validateSettings(settings ServerSettings) error {
 	}
 
 	// Validate startup configuration
-	if settings.Startup.Enabled && len(settings.Startup.Notifiers) == 0 {
-		return fmt.Errorf("startup is enabled but no notifiers specified")
+	if settings.Startup.Enabled && len(settings.Startup.Alerts) == 0 {
+		return fmt.Errorf("startup is enabled but no alerts specified")
 	}
 
 	return nil
 }
 
-// editNotifiers allows editing notification configurations using $EDITOR
-func editNotifiers(stateManager *StateManager) {
+// editAlerts allows editing notification configurations using $EDITOR
+func editAlerts(stateManager *StateManager) {
 	fmt.Printf("%s Info: Opening editor: %s\n", qc.Colorize("✏️ Info:", qc.ColorCyan), os.Getenv("EDITOR"))
 	fmt.Printf("State file: %s\n\n", stateManager.filePath)
 
-	// Create temporary file with current notifiers
-	tempFile, err := createTempNotifiersFile(stateManager)
+	// Create temporary file with current alerts
+	tempFile, err := createTempAlertsFile(stateManager)
 	if err != nil {
 		fmt.Printf("%s Failed to create temporary file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -638,7 +736,7 @@ func editNotifiers(stateManager *StateManager) {
 		return
 	}
 
-	// Read the modified notifiers
+	// Read the modified alerts
 	modifiedData, err := ioutil.ReadFile(tempFile)
 	if err != nil {
 		fmt.Printf("%s Failed to read modified file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
@@ -646,82 +744,91 @@ func editNotifiers(stateManager *StateManager) {
 	}
 
 	// Validate the modified YAML
-	if err := validateNotifiersYAML(modifiedData); err != nil {
+	if err := validateAlertsYAML(modifiedData); err != nil {
 		fmt.Printf("%s Invalid YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		fmt.Println("Please fix the errors and try again.")
 		return
 	}
 
-	// Parse the modified notifiers
-	var notifiersData map[string]interface{}
-	if err := yaml.Unmarshal(modifiedData, &notifiersData); err != nil {
+	// Parse the modified alerts (new) or alerts (legacy)
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(modifiedData, &raw); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
 	}
 
-	// Extract notifiers
-	notifiers := make(map[string]NotifierConfig)
-	for name, notifierInterface := range notifiersData {
-		if notifierMap, ok := notifierInterface.(map[string]interface{}); ok {
-			notifier := NotifierConfig{
+	// Extract alerts
+	alerts := make(map[string]NotifierConfig)
+	var iter map[string]interface{}
+	if v, ok := raw["alerts"].(map[string]interface{}); ok {
+		iter = v
+	} else if v, ok := raw["alerts"].(map[string]interface{}); ok { // legacy fallback
+		iter = v
+	} else {
+		// Simplified top-level map format: alertName: { type: ..., ... }
+		iter = raw
+	}
+	for name, alertInterface := range iter {
+		if alertMap, ok := alertInterface.(map[string]interface{}); ok {
+			alert := NotifierConfig{
 				Name:     name,
 				Enabled:  true,
 				Settings: make(map[string]interface{}),
 			}
 
-			if notifierType, ok := notifierMap["type"].(string); ok {
-				notifier.Type = notifierType
+			if alertType, ok := alertMap["type"].(string); ok {
+				alert.Type = alertType
 			}
-			if enabled, ok := notifierMap["enabled"].(bool); ok {
-				notifier.Enabled = enabled
+			if enabled, ok := alertMap["enabled"].(bool); ok {
+				alert.Enabled = enabled
 			}
-			if description, ok := notifierMap["description"].(string); ok {
-				notifier.Description = description
+			if description, ok := alertMap["description"].(string); ok {
+				alert.Description = description
 			}
-			if settings, ok := notifierMap["settings"].(map[string]interface{}); ok {
-				notifier.Settings = settings
+			if settings, ok := alertMap["settings"].(map[string]interface{}); ok {
+				alert.Settings = settings
 			}
 
-			notifiers[name] = notifier
+			alerts[name] = alert
 		}
 	}
 
-	// Validate notifiers
-	if err := validateNotifiers(notifiers); err != nil {
-		fmt.Printf("%s Invalid notifiers: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+	// Validate alerts
+	if err := validateAlerts(alerts); err != nil {
+		fmt.Printf("%s Invalid alerts: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		fmt.Printf("%s Please fix the validation errors and try again.\n", qc.Colorize("💡 Tip:", qc.ColorYellow))
 		return
 	}
 
-	// Update notifiers in state manager
-	if err := stateManager.UpdateNotifiers(notifiers); err != nil {
-		fmt.Printf("%s Failed to update notifiers: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+	// Update alerts in state manager
+	if err := stateManager.UpdateAlerts(alerts); err != nil {
+		fmt.Printf("%s Failed to update alerts: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
 	}
 
-	fmt.Printf("%s Notifiers updated successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
+	fmt.Printf("%s Alerts updated successfully!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 }
 
-// createTempNotifiersFile creates a temporary file with the current notifiers for editing
-func createTempNotifiersFile(stateManager *StateManager) (string, error) {
+// createTempAlertsFile creates a temporary file with the current alerts for editing
+func createTempAlertsFile(stateManager *StateManager) (string, error) {
 	// Create temporary file
-	tempFile, err := ioutil.TempFile("", "quick_watch_notifiers_*.yml")
+	tempFile, err := ioutil.TempFile("", "quick_watch_alerts_*.yml")
 	if err != nil {
 		return "", err
 	}
 	defer tempFile.Close()
 
-	// Get current notifiers
-	notifiers := stateManager.GetNotifiers()
+	// Get current alerts
+	alerts := stateManager.GetAlerts()
 
-	// If no notifiers exist, create default ones
-	if len(notifiers) == 0 {
-		notifiers = map[string]NotifierConfig{
+	// If no alerts exist, create default console
+	if len(alerts) == 0 {
+		alerts = map[string]NotifierConfig{
 			"console": {
 				Name:        "console",
 				Type:        "console",
 				Enabled:     true,
-				Description: "Default console output",
+				Description: "Console output",
 				Settings: map[string]interface{}{
 					"style": "stylized",
 					"color": true,
@@ -730,14 +837,28 @@ func createTempNotifiersFile(stateManager *StateManager) (string, error) {
 		}
 	}
 
-	// Marshal to YAML
-	data, err := yaml.Marshal(notifiers)
+	// Marshal to simplified top-level map, omitting the name field per entry
+	simplified := make(map[string]map[string]interface{})
+	for key, n := range alerts {
+		entry := map[string]interface{}{
+			"type":    n.Type,
+			"enabled": n.Enabled,
+		}
+		if n.Description != "" {
+			entry["description"] = n.Description
+		}
+		if n.Settings != nil {
+			entry["settings"] = n.Settings
+		}
+		simplified[key] = entry
+	}
+	data, err := yaml.Marshal(simplified)
 	if err != nil {
 		return "", err
 	}
 
 	// Add helpful comments
-	commentedData := addNotifiersComments(data)
+	commentedData := addAlertsComments(data)
 
 	// Write to temp file
 	if _, err := tempFile.Write(commentedData); err != nil {
@@ -747,88 +868,239 @@ func createTempNotifiersFile(stateManager *StateManager) (string, error) {
 	return tempFile.Name(), nil
 }
 
-// addNotifiersComments adds helpful comments to the notifiers YAML for editing
-func addNotifiersComments(data []byte) []byte {
+// addAlertsComments adds helpful comments to the alerts YAML for editing
+func addAlertsComments(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
 	commentedLines := []string{
-		"# Quick Watch Notification Configurations",
-		"# Edit the notifiers below",
+		"# Edit alerts below. Each key is the alert name.",
+		"# For console, only 'type: console' is required.",
+		"# For slack, 'type: slack' and 'settings.webhook_url' are required.",
 		"#",
-		"# Notifier Types:",
-		"#   console: Output to console (supports 'plain' or 'stylized' style)",
-		"#   slack: Send to Slack webhook",
+		"# Full examples:",
+		"# console:",
+		"#   type: console",
+		"#   enabled: true",
+		"#   description: \"Console output\"",
+		"#   settings:",
+		"#     style: stylized",
+		"#     color: true",
 		"#",
-		"# Console Settings:",
-		"#   style: 'plain' or 'stylized' (default: stylized)",
-		"#   color: true/false (default: true)",
-		"#",
-		"# Slack Settings:",
-		"#   webhook_url: Slack webhook URL (required)",
-		"#   channel: Slack channel (optional)",
-		"#   username: Bot username (optional)",
-		"#   icon_emoji: Bot icon emoji (optional)",
-		"#",
-		"# Example notifiers:",
-		"#   console:",
-		"#     type: console",
-		"#     enabled: true",
-		"#     description: \"Console output\"",
-		"#     settings:",
-		"#       style: stylized",
-		"#       color: true",
-		"#",
-		"#   slack-alerts:",
-		"#     type: slack",
-		"#     enabled: true",
-		"#     description: \"Slack alerts channel\"",
-		"#     settings:",
-		"#       webhook_url: \"https://hooks.slack.com/services/...\"",
-		"#       channel: \"#alerts\"",
-		"#       username: \"QuickWatch\"",
-		"#       icon_emoji: \":robot_face:\"",
+		"# slack:",
+		"#   type: slack",
+		"#   enabled: true",
+		"#   description: \"Slack alerts channel\"",
+		"#   settings:",
+		"#     webhook_url: \"https://hooks.slack.com/services/...\"",
+		"#     channel: \"#alerts\"",
+		"#     username: \"QuickWatch\"",
+		"#     icon_emoji: \":robot_face:\"",
 		"#",
 		"",
 	}
-
 	commentedLines = append(commentedLines, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
-// validateNotifiersYAML validates that the notifiers YAML is well-formed
-func validateNotifiersYAML(data []byte) error {
+// parseTargetsFromYAML parses targets from any of the supported editor formats
+func parseTargetsFromYAML(data []byte) (map[string]Target, map[string]*TargetFields, error) {
+	var targetsData map[string]interface{}
+	if err := yaml.Unmarshal(data, &targetsData); err != nil {
+		return nil, nil, err
+	}
+
+	targetsMap := make(map[string]Target)
+	targetFieldsMap := make(map[string]*TargetFields)
+
+	// Prefer wrapped under "targets"
+	if targetsInterface, ok := targetsData["targets"]; ok {
+		parseTargetsInterface(targetsInterface, targetsMap, targetFieldsMap)
+	}
+	// Legacy "targets"
+	if len(targetsMap) == 0 {
+		if targetsInterface, ok := targetsData["targets"]; ok {
+			parseTargetsInterface(targetsInterface, targetsMap, targetFieldsMap)
+		}
+	}
+	// Simplified top-level
+	if len(targetsMap) == 0 {
+		parseTargetsInterface(targetsData, targetsMap, targetFieldsMap)
+	}
+
+	return targetsMap, targetFieldsMap, nil
+}
+
+// parseTargetsInterface fills maps from either map[string]any or []any structures
+func parseTargetsInterface(src interface{}, out map[string]Target, fields map[string]*TargetFields) {
+	switch v := src.(type) {
+	case map[string]interface{}:
+		for key, targetInterface := range v {
+			if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+				target := Target{}
+				f := &TargetFields{}
+				if name, ok := targetMap["name"].(string); ok && name != "" {
+					target.Name = name
+				} else {
+					target.Name = key
+				}
+				if urlVal, ok := targetMap["url"].(string); ok {
+					target.URL = urlVal
+				}
+				if method, ok := targetMap["method"].(string); ok {
+					target.Method = method
+					f.Method = true
+				}
+				if threshold, ok := targetMap["threshold"].(int); ok {
+					target.Threshold = threshold
+					f.Threshold = true
+				}
+				if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+					f.StatusCodes = true
+					for _, code := range statusCodes {
+						if codeStr, ok := code.(string); ok {
+							target.StatusCodes = append(target.StatusCodes, codeStr)
+						}
+					}
+				}
+				if headers, ok := targetMap["headers"].(map[string]interface{}); ok {
+					f.Headers = true
+					target.Headers = make(map[string]string)
+					for hk, hv := range headers {
+						if hvs, ok := hv.(string); ok {
+							target.Headers[hk] = hvs
+						}
+					}
+				}
+				if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
+					f.SizeAlerts = true
+					if enabled, ok := sizeAlerts["enabled"].(bool); ok {
+						target.SizeAlerts.Enabled = enabled
+					}
+					if historySize, ok := sizeAlerts["history_size"].(int); ok {
+						target.SizeAlerts.HistorySize = historySize
+					}
+					if th, ok := sizeAlerts["threshold"].(float64); ok {
+						target.SizeAlerts.Threshold = th
+					}
+				}
+				if checkStrategy, ok := targetMap["check_strategy"].(string); ok {
+					target.CheckStrategy = checkStrategy
+					f.CheckStrategy = true
+				}
+				// Alerts: accept string or list
+				if aval, ok := targetMap["alerts"]; ok {
+					switch at := aval.(type) {
+					case string:
+						if strings.TrimSpace(at) != "" {
+							target.Alerts = []string{at}
+							f.Alerts = true
+						}
+					case []interface{}:
+						for _, a := range at {
+							if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+								target.Alerts = append(target.Alerts, s)
+							}
+						}
+						if len(target.Alerts) > 0 {
+							f.Alerts = true
+						}
+					}
+				}
+				if target.URL != "" {
+					out[target.URL] = target
+					fields[target.URL] = f
+				}
+			}
+		}
+	case []interface{}:
+		for _, targetInterface := range v {
+			if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+				target := Target{}
+				f := &TargetFields{}
+				if name, ok := targetMap["name"].(string); ok {
+					target.Name = name
+				}
+				if urlVal, ok := targetMap["url"].(string); ok {
+					target.URL = urlVal
+				}
+				if method, ok := targetMap["method"].(string); ok {
+					target.Method = method
+					f.Method = true
+				}
+				if threshold, ok := targetMap["threshold"].(int); ok {
+					target.Threshold = threshold
+					f.Threshold = true
+				}
+				if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+					f.StatusCodes = true
+					for _, code := range statusCodes {
+						if codeStr, ok := code.(string); ok {
+							target.StatusCodes = append(target.StatusCodes, codeStr)
+						}
+					}
+				}
+				// Alerts: accept string or list
+				if aval, ok := targetMap["alerts"]; ok {
+					switch at := aval.(type) {
+					case string:
+						if strings.TrimSpace(at) != "" {
+							target.Alerts = []string{at}
+							f.Alerts = true
+						}
+					case []interface{}:
+						for _, a := range at {
+							if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+								target.Alerts = append(target.Alerts, s)
+							}
+						}
+						if len(target.Alerts) > 0 {
+							f.Alerts = true
+						}
+					}
+				}
+				if target.URL != "" {
+					out[target.URL] = target
+					fields[target.URL] = f
+				}
+			}
+		}
+	}
+}
+
+// validateAlertsYAML validates that the alerts YAML is well-formed
+func validateAlertsYAML(data []byte) error {
 	var temp interface{}
 	return yaml.Unmarshal(data, &temp)
 }
 
-// validateNotifiers validates notifier configurations
-func validateNotifiers(notifiers map[string]NotifierConfig) error {
-	for name, notifier := range notifiers {
-		if notifier.Name == "" {
-			return fmt.Errorf("notifier %s: name cannot be empty", name)
+// validateAlerts validates alert configurations
+func validateAlerts(alerts map[string]NotifierConfig) error {
+	for name, alert := range alerts {
+		if alert.Name == "" {
+			return fmt.Errorf("alert %s: name cannot be empty", name)
 		}
-		if notifier.Type == "" {
-			return fmt.Errorf("notifier %s: type is required", name)
+		if alert.Type == "" {
+			return fmt.Errorf("alert %s: type is required", name)
 		}
 
-		switch notifier.Type {
+		switch alert.Type {
 		case "console":
 			// Validate console settings
-			if style, ok := notifier.Settings["style"].(string); ok {
+			if style, ok := alert.Settings["style"].(string); ok {
 				if style != "plain" && style != "stylized" {
-					return fmt.Errorf("notifier %s: console style must be 'plain' or 'stylized', got '%s'", name, style)
+					return fmt.Errorf("alert %s: console style must be 'plain' or 'stylized', got '%s'", name, style)
 				}
 			}
 		case "slack":
 			// Validate Slack settings
-			webhookURL, ok := notifier.Settings["webhook_url"].(string)
+			webhookURL, ok := alert.Settings["webhook_url"].(string)
 			if !ok || webhookURL == "" {
-				return fmt.Errorf("notifier %s: slack webhook_url is required", name)
+				return fmt.Errorf("alert %s: slack webhook_url is required", name)
 			}
 			if !strings.HasPrefix(webhookURL, "https://hooks.slack.com/") {
-				return fmt.Errorf("notifier %s: slack webhook_url must be a valid Slack webhook URL", name)
+				return fmt.Errorf("alert %s: slack webhook_url must be a valid Slack webhook URL", name)
 			}
 		default:
-			return fmt.Errorf("notifier %s: unknown type '%s', must be 'console' or 'slack'", name, notifier.Type)
+			return fmt.Errorf("alert %s: unknown type '%s', must be 'console' or 'slack'", name, alert.Type)
 		}
 	}
 	return nil
@@ -847,42 +1119,28 @@ func validateStateFile(stateFile string, verbose bool) {
 		os.Exit(1)
 	}
 
-	// Get monitors and notifiers
-	monitorConfig := stateManager.GetMonitorConfig()
-	monitors := monitorConfig.Monitors
-	notifiers := stateManager.GetNotifiers()
+	// Get targets and alerts
+	targetConfig := stateManager.GetTargetConfig()
+	targets := targetConfig.Targets
+	alerts := stateManager.GetAlerts()
 
-	// Validate monitors
-	validAlertStrategies := getValidAlertStrategies(notifiers)
-
+	// Validate targets
 	errors := []string{}
 	warnings := []string{}
 
-	// Check each monitor
-	for url, monitor := range monitors {
+	// Check each target
+	for _, target := range targets {
 		// Check required fields
-		if monitor.Name == "" {
-			errors = append(errors, fmt.Sprintf("Monitor %s: name is required", url))
+		if target.Name == "" {
+			errors = append(errors, fmt.Sprintf("Target %s: name is required", target.URL))
 		}
-		if monitor.URL == "" {
-			errors = append(errors, fmt.Sprintf("Monitor %s: url is required", url))
-		}
-
-		// Check alert strategy
-		if monitor.AlertStrategy != "" {
-			if !validAlertStrategies[monitor.AlertStrategy] {
-				errors = append(errors, fmt.Sprintf("Monitor %s: invalid alert_strategy '%s', must be one of: %s",
-					url, monitor.AlertStrategy, getValidStrategiesList(validAlertStrategies)))
-			} else if verbose {
-				fmt.Printf("  ✓ Monitor %s: alert_strategy '%s' is valid\n", url, monitor.AlertStrategy)
-			}
-		} else {
-			warnings = append(warnings, fmt.Sprintf("Monitor %s: no alert_strategy specified, will use default 'console'", url))
+		if target.URL == "" {
+			errors = append(errors, "Target: url is required")
 		}
 
 		// Check URL format
-		if monitor.URL != "" && !strings.HasPrefix(monitor.URL, "http://") && !strings.HasPrefix(monitor.URL, "https://") {
-			errors = append(errors, fmt.Sprintf("Monitor %s: url must start with http:// or https://", url))
+		if target.URL != "" && !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+			errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", target.URL))
 		}
 
 		// Check HTTP method
@@ -890,16 +1148,16 @@ func validateStateFile(stateFile string, verbose bool) {
 			"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
 			"HEAD": true, "OPTIONS": true, "TRACE": true, "CONNECT": true,
 		}
-		if monitor.Method != "" && !validMethods[monitor.Method] {
-			errors = append(errors, fmt.Sprintf("Monitor %s: invalid method '%s'", url, monitor.Method))
+		if target.Method != "" && !validMethods[target.Method] {
+			errors = append(errors, fmt.Sprintf("Target %s: invalid method '%s'", target.URL, target.Method))
 		}
 	}
 
-	// Check notifiers
-	for name, notifier := range notifiers {
-		if notifier.Enabled {
-			if notifier.Type == "slack" {
-				if webhookURL, ok := notifier.Settings["webhook_url"].(string); !ok || webhookURL == "" {
+	// Check alerts
+	for name, alert := range alerts {
+		if alert.Enabled {
+			if alert.Type == "slack" {
+				if webhookURL, ok := alert.Settings["webhook_url"].(string); !ok || webhookURL == "" {
 					errors = append(errors, fmt.Sprintf("Notifier %s: slack webhook_url is required", name))
 				} else if !strings.HasPrefix(webhookURL, "https://hooks.slack.com/") {
 					errors = append(errors, fmt.Sprintf("Notifier %s: slack webhook_url must be a valid Slack webhook URL", name))
@@ -912,8 +1170,8 @@ func validateStateFile(stateFile string, verbose bool) {
 	if len(errors) == 0 && len(warnings) == 0 {
 		fmt.Printf("%s Configuration is valid!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 		if verbose {
-			fmt.Printf("  • %d monitors configured\n", len(monitors))
-			fmt.Printf("  • %d notifiers configured\n", len(notifiers))
+			fmt.Printf("  • %d targets configured\n", len(targets))
+			fmt.Printf("  • %d alerts configured\n", len(alerts))
 		}
 		os.Exit(0)
 	}
@@ -954,99 +1212,82 @@ func validateConfigFile(configFile string, verbose bool) {
 		os.Exit(1)
 	}
 
-	// Extract monitors and notifiers
-	monitors := make(map[string]Monitor)
-	notifiers := make(map[string]NotifierConfig)
+	// Extract targets and alerts
+	targets := make(map[string]Target)
+	alerts := make(map[string]NotifierConfig)
 
-	// Parse monitors
-	if monitorsData, exists := configData["monitors"]; exists {
-		if monitorsMap, ok := monitorsData.(map[string]interface{}); ok {
-			for url, monitorInterface := range monitorsMap {
-				if monitorMap, ok := monitorInterface.(map[string]interface{}); ok {
-					monitor := Monitor{}
-					if name, ok := monitorMap["name"].(string); ok {
-						monitor.Name = name
+	// Parse targets
+	if targetsData, exists := configData["targets"]; exists {
+		if targetsMap, ok := targetsData.(map[string]interface{}); ok {
+			for url, targetInterface := range targetsMap {
+				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+					target := Target{}
+					if name, ok := targetMap["name"].(string); ok {
+						target.Name = name
 					}
-					if urlVal, ok := monitorMap["url"].(string); ok {
-						monitor.URL = urlVal
+					if urlVal, ok := targetMap["url"].(string); ok {
+						target.URL = urlVal
 					}
-					if method, ok := monitorMap["method"].(string); ok {
-						monitor.Method = method
+					if method, ok := targetMap["method"].(string); ok {
+						target.Method = method
 					}
-					if threshold, ok := monitorMap["threshold"].(int); ok {
-						monitor.Threshold = threshold
+					if threshold, ok := targetMap["threshold"].(int); ok {
+						target.Threshold = threshold
 					}
-					if checkStrategy, ok := monitorMap["check_strategy"].(string); ok {
-						monitor.CheckStrategy = checkStrategy
+					if checkStrategy, ok := targetMap["check_strategy"].(string); ok {
+						target.CheckStrategy = checkStrategy
 					}
-					if alertStrategy, ok := monitorMap["alert_strategy"].(string); ok {
-						monitor.AlertStrategy = alertStrategy
-					}
-					monitors[url] = monitor
+					targets[url] = target
 				}
 			}
 		}
 	}
 
-	// Parse notifiers
-	if notifiersData, exists := configData["notifiers"]; exists {
-		if notifiersMap, ok := notifiersData.(map[string]interface{}); ok {
-			for name, notifierInterface := range notifiersMap {
-				if notifierMap, ok := notifierInterface.(map[string]interface{}); ok {
-					notifier := NotifierConfig{
+	// Parse alerts
+	if alertsData, exists := configData["alerts"]; exists {
+		if alertsMap, ok := alertsData.(map[string]interface{}); ok {
+			for name, alertInterface := range alertsMap {
+				if alertMap, ok := alertInterface.(map[string]interface{}); ok {
+					alert := NotifierConfig{
 						Name:     name,
 						Enabled:  true,
 						Settings: make(map[string]interface{}),
 					}
-					if notifierType, ok := notifierMap["type"].(string); ok {
-						notifier.Type = notifierType
+					if alertType, ok := alertMap["type"].(string); ok {
+						alert.Type = alertType
 					}
-					if enabled, ok := notifierMap["enabled"].(bool); ok {
-						notifier.Enabled = enabled
+					if enabled, ok := alertMap["enabled"].(bool); ok {
+						alert.Enabled = enabled
 					}
-					if description, ok := notifierMap["description"].(string); ok {
-						notifier.Description = description
+					if description, ok := alertMap["description"].(string); ok {
+						alert.Description = description
 					}
-					if settings, ok := notifierMap["settings"].(map[string]interface{}); ok {
-						notifier.Settings = settings
+					if settings, ok := alertMap["settings"].(map[string]interface{}); ok {
+						alert.Settings = settings
 					}
-					notifiers[name] = notifier
+					alerts[name] = alert
 				}
 			}
 		}
 	}
 
-	// Validate monitors
-	validAlertStrategies := getValidAlertStrategies(notifiers)
-
+	// Validate targets
 	errors := []string{}
 	warnings := []string{}
 
-	// Check each monitor
-	for url, monitor := range monitors {
+	// Check each target
+	for url, target := range targets {
 		// Check required fields
-		if monitor.Name == "" {
-			errors = append(errors, fmt.Sprintf("Monitor %s: name is required", url))
+		if target.Name == "" {
+			errors = append(errors, fmt.Sprintf("Target %s: name is required", url))
 		}
-		if monitor.URL == "" {
-			errors = append(errors, fmt.Sprintf("Monitor %s: url is required", url))
-		}
-
-		// Check alert strategy
-		if monitor.AlertStrategy != "" {
-			if !validAlertStrategies[monitor.AlertStrategy] {
-				errors = append(errors, fmt.Sprintf("Monitor %s: invalid alert_strategy '%s', must be one of: %s",
-					url, monitor.AlertStrategy, getValidStrategiesList(validAlertStrategies)))
-			} else if verbose {
-				fmt.Printf("  ✓ Monitor %s: alert_strategy '%s' is valid\n", url, monitor.AlertStrategy)
-			}
-		} else {
-			warnings = append(warnings, fmt.Sprintf("Monitor %s: no alert_strategy specified, will use default 'console'", url))
+		if target.URL == "" {
+			errors = append(errors, fmt.Sprintf("Target %s: url is required", url))
 		}
 
 		// Check URL format
-		if monitor.URL != "" && !strings.HasPrefix(monitor.URL, "http://") && !strings.HasPrefix(monitor.URL, "https://") {
-			errors = append(errors, fmt.Sprintf("Monitor %s: url must start with http:// or https://", url))
+		if target.URL != "" && !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+			errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", url))
 		}
 
 		// Check HTTP method
@@ -1054,16 +1295,16 @@ func validateConfigFile(configFile string, verbose bool) {
 			"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
 			"HEAD": true, "OPTIONS": true, "TRACE": true, "CONNECT": true,
 		}
-		if monitor.Method != "" && !validMethods[monitor.Method] {
-			errors = append(errors, fmt.Sprintf("Monitor %s: invalid method '%s'", url, monitor.Method))
+		if target.Method != "" && !validMethods[target.Method] {
+			errors = append(errors, fmt.Sprintf("Target %s: invalid method '%s'", url, target.Method))
 		}
 	}
 
-	// Check notifiers
-	for name, notifier := range notifiers {
-		if notifier.Enabled {
-			if notifier.Type == "slack" {
-				if webhookURL, ok := notifier.Settings["webhook_url"].(string); !ok || webhookURL == "" {
+	// Check alerts
+	for name, alert := range alerts {
+		if alert.Enabled {
+			if alert.Type == "slack" {
+				if webhookURL, ok := alert.Settings["webhook_url"].(string); !ok || webhookURL == "" {
 					errors = append(errors, fmt.Sprintf("Notifier %s: slack webhook_url is required", name))
 				} else if !strings.HasPrefix(webhookURL, "https://hooks.slack.com/") {
 					errors = append(errors, fmt.Sprintf("Notifier %s: slack webhook_url must be a valid Slack webhook URL", name))
@@ -1076,8 +1317,8 @@ func validateConfigFile(configFile string, verbose bool) {
 	if len(errors) == 0 && len(warnings) == 0 {
 		fmt.Printf("%s Configuration is valid!\n", qc.Colorize("✅ Success:", qc.ColorGreen))
 		if verbose {
-			fmt.Printf("  • %d monitors configured\n", len(monitors))
-			fmt.Printf("  • %d notifiers configured\n", len(notifiers))
+			fmt.Printf("  • %d targets configured\n", len(targets))
+			fmt.Printf("  • %d alerts configured\n", len(alerts))
 		}
 		os.Exit(0)
 	}
@@ -1098,13 +1339,13 @@ func validateConfigFile(configFile string, verbose bool) {
 	}
 }
 
-// getValidAlertStrategies returns a map of valid alert strategies from notifiers
-func getValidAlertStrategies(notifiers map[string]NotifierConfig) map[string]bool {
+// getValidAlerts returns a map of valid alert alerts from alerts
+func getValidAlerts(alerts map[string]NotifierConfig) map[string]bool {
 	validStrategies := make(map[string]bool)
 	validStrategies["console"] = true // Default console strategy
 
-	for name, notifier := range notifiers {
-		if notifier.Enabled {
+	for name, alert := range alerts {
+		if alert.Enabled {
 			validStrategies[name] = true
 		}
 	}
@@ -1112,17 +1353,17 @@ func getValidAlertStrategies(notifiers map[string]NotifierConfig) map[string]boo
 	return validStrategies
 }
 
-// getValidStrategiesList returns a comma-separated list of valid strategies
+// getValidStrategiesList returns a comma-separated list of valid alerts
 func getValidStrategiesList(validStrategies map[string]bool) string {
-	strategies := []string{}
+	alerts := []string{}
 	for strategy := range validStrategies {
-		strategies = append(strategies, strategy)
+		alerts = append(alerts, strategy)
 	}
-	return strings.Join(strategies, ", ")
+	return strings.Join(alerts, ", ")
 }
 
 // isValidAlertStrategy checks if an alert strategy is valid for the engine
-func isValidAlertStrategy(strategy string, engine *MonitoringEngine) bool {
+func isValidAlertStrategy(strategy string, engine *TargetEngine) bool {
 	_, exists := engine.alertStrategies[strategy]
 	return exists
 }

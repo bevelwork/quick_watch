@@ -13,12 +13,12 @@ import (
 type WebhookServer struct {
 	port   int
 	path   string
-	engine *MonitoringEngine
+	engine *TargetEngine
 	server *http.Server
 }
 
 // NewWebhookServer creates a new webhook server
-func NewWebhookServer(port int, path string, engine *MonitoringEngine) *WebhookServer {
+func NewWebhookServer(port int, path string, engine *TargetEngine) *WebhookServer {
 	return &WebhookServer{
 		port:   port,
 		path:   path,
@@ -116,18 +116,18 @@ func (w *WebhookServer) handleStatus(wr http.ResponseWriter, r *http.Request) {
 	wr.Header().Set("Content-Type", "application/json")
 	wr.WriteHeader(http.StatusOK)
 
-	monitors := w.engine.GetMonitorStatus()
+	targets := w.engine.GetTargetStatus()
 	status := map[string]interface{}{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
-		"monitors":  make([]map[string]interface{}, len(monitors)),
+		"targets":  make([]map[string]interface{}, len(targets)),
 	}
 
-	monitorList := status["monitors"].([]map[string]interface{})
-	for i, state := range monitors {
-		monitorList[i] = map[string]interface{}{
-			"name":       state.Monitor.Name,
-			"url":        state.Monitor.URL,
+	targetList := status["targets"].([]map[string]interface{})
+	for i, state := range targets {
+		targetList[i] = map[string]interface{}{
+			"name":       state.Target.Name,
+			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
 			"down_since": state.DownSince,
 			"last_check": state.LastCheck,

@@ -13,7 +13,7 @@ import (
 // Server represents the quick_watch server
 type Server struct {
 	stateManager  *StateManager
-	engine        *MonitoringEngine
+	engine        *TargetEngine
 	webhookServer *WebhookServer
 	server        *http.Server
 	state         string // "stopped", "starting", "running", "stopping"
@@ -37,13 +37,13 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to load state: %v", err)
 	}
 
-	// Create monitoring engine
-	config := s.stateManager.GetMonitorConfig()
-	s.engine = NewMonitoringEngine(config, s.stateManager)
+	// Create targeting engine
+	config := s.stateManager.GetTargetConfig()
+	s.engine = NewTargetEngine(config, s.stateManager)
 
-	// Start monitoring
+	// Start targeting
 	if err := s.engine.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start monitoring engine: %v", err)
+		return fmt.Errorf("failed to start targeting engine: %v", err)
 	}
 
 	// Send startup message if enabled and configured
@@ -64,8 +64,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	// API endpoints
-	mux.HandleFunc("/api/monitors", s.handleMonitors)
-	mux.HandleFunc("/api/monitors/", s.handleMonitorByURL)
+	mux.HandleFunc("/api/targets", s.handleTargets)
+	mux.HandleFunc("/api/targets/", s.handleTargetByURL)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/settings", s.handleSettings)
@@ -133,20 +133,20 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <h1>Quick Watch Server</h1>
-    <p>Quick Watch monitoring server is running.</p>
+    <p>Quick Watch targeting server is running.</p>
     
     <h2>API Endpoints</h2>
     <div class="endpoint">
-        <span class="method">GET</span> /api/status - Get monitoring status
+        <span class="method">GET</span> /api/status - Get targeting status
     </div>
     <div class="endpoint">
-        <span class="method">GET</span> /api/monitors - List all monitors
+        <span class="method">GET</span> /api/targets - List all targets
     </div>
     <div class="endpoint">
-        <span class="method">POST</span> /api/monitors - Add a monitor
+        <span class="method">POST</span> /api/targets - Add a target
     </div>
     <div class="endpoint">
-        <span class="method">DELETE</span> /api/monitors/{url} - Remove a monitor
+        <span class="method">DELETE</span> /api/targets/{url} - Remove a target
     </div>
     <div class="endpoint">
         <span class="method">GET</span> /api/state - Get server state
@@ -193,19 +193,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	monitors := s.engine.GetMonitorStatus()
+	targets := s.engine.GetTargetStatus()
 	status := map[string]interface{}{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
 		"state":     s.state,
-		"monitors":  make([]map[string]interface{}, len(monitors)),
+		"targets":   make([]map[string]interface{}, len(targets)),
 	}
 
-	monitorList := status["monitors"].([]map[string]interface{})
-	for i, state := range monitors {
-		monitorList[i] = map[string]interface{}{
-			"name":       state.Monitor.Name,
-			"url":        state.Monitor.URL,
+	targetList := status["targets"].([]map[string]interface{})
+	for i, state := range targets {
+		targetList[i] = map[string]interface{}{
+			"name":       state.Target.Name,
+			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
 			"down_since": state.DownSince,
 			"last_check": state.LastCheck,
@@ -227,61 +227,61 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(state)
 }
 
-// handleMonitors handles monitor management
-func (s *Server) handleMonitors(w http.ResponseWriter, r *http.Request) {
+// handleTargets handles target management
+func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		s.handleListMonitors(w, r)
+		s.handleListTargets(w, r)
 	case "POST":
-		s.handleAddMonitor(w, r)
+		s.handleAddTarget(w, r)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleListMonitors lists all monitors
-func (s *Server) handleListMonitors(w http.ResponseWriter, r *http.Request) {
+// handleListTargets lists all targets
+func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	monitors := s.stateManager.ListMonitors()
-	json.NewEncoder(w).Encode(monitors)
+	targets := s.stateManager.ListTargets()
+	json.NewEncoder(w).Encode(targets)
 }
 
-// handleAddMonitor adds a new monitor
-func (s *Server) handleAddMonitor(w http.ResponseWriter, r *http.Request) {
-	var monitor Monitor
-	if err := json.NewDecoder(r.Body).Decode(&monitor); err != nil {
+// handleAddTarget adds a new target
+func (s *Server) handleAddTarget(w http.ResponseWriter, r *http.Request) {
+	var target Target
+	if err := json.NewDecoder(r.Body).Decode(&target); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if monitor.URL == "" {
+	if target.URL == "" {
 		http.Error(w, "URL is required", http.StatusBadRequest)
 		return
 	}
 
-	if err := s.stateManager.AddMonitor(monitor); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to add monitor: %v", err), http.StatusInternalServerError)
+	if err := s.stateManager.AddTarget(target); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to add target: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Restart monitoring engine with new configuration
-	config := s.stateManager.GetMonitorConfig()
-	s.engine = NewMonitoringEngine(config, s.stateManager)
+	// Restart targeting engine with new configuration
+	config := s.stateManager.GetTargetConfig()
+	s.engine = NewTargetEngine(config, s.stateManager)
 	if err := s.engine.Start(r.Context()); err != nil {
-		log.Printf("Failed to restart monitoring engine: %v", err)
+		log.Printf("Failed to restart targeting engine: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "added", "url": monitor.URL})
+	json.NewEncoder(w).Encode(map[string]string{"status": "added", "url": target.URL})
 }
 
-// handleMonitorByURL handles individual monitor operations
-func (s *Server) handleMonitorByURL(w http.ResponseWriter, r *http.Request) {
+// handleTargetByURL handles individual target operations
+func (s *Server) handleTargetByURL(w http.ResponseWriter, r *http.Request) {
 	// Extract URL from path
-	path := strings.TrimPrefix(r.URL.Path, "/api/monitors/")
+	path := strings.TrimPrefix(r.URL.Path, "/api/targets/")
 	if path == "" {
 		http.Error(w, "URL parameter required", http.StatusBadRequest)
 		return
@@ -292,25 +292,25 @@ func (s *Server) handleMonitorByURL(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case "GET":
-		monitor, exists := s.stateManager.GetMonitor(url)
+		target, exists := s.stateManager.GetTarget(url)
 		if !exists {
-			http.Error(w, "Monitor not found", http.StatusNotFound)
+			http.Error(w, "Target not found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(monitor)
+		json.NewEncoder(w).Encode(target)
 
 	case "DELETE":
-		if err := s.stateManager.RemoveMonitor(url); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to remove monitor: %v", err), http.StatusInternalServerError)
+		if err := s.stateManager.RemoveTarget(url); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to remove target: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		// Restart monitoring engine with new configuration
-		config := s.stateManager.GetMonitorConfig()
-		s.engine = NewMonitoringEngine(config, s.stateManager)
+		// Restart targeting engine with new configuration
+		config := s.stateManager.GetTargetConfig()
+		s.engine = NewTargetEngine(config, s.stateManager)
 		if err := s.engine.Start(r.Context()); err != nil {
-			log.Printf("Failed to restart monitoring engine: %v", err)
+			log.Printf("Failed to restart targeting engine: %v", err)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -351,7 +351,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendStartupMessage sends startup notifications to configured notifiers
+// sendStartupMessage sends startup notifications to configured alerts
 func (s *Server) sendStartupMessage(ctx context.Context) {
 	settings := s.stateManager.GetSettings()
 
@@ -360,67 +360,67 @@ func (s *Server) sendStartupMessage(ctx context.Context) {
 		return
 	}
 
-	monitorCount := len(s.engine.monitors)
+	targetCount := len(s.engine.targets)
 	version := resolveVersion()
 
-	// Send startup message to each configured notifier
-	for _, notifierName := range settings.Startup.Notifiers {
-		if alertStrategy, exists := s.engine.alertStrategies[notifierName]; exists {
+	// Send startup message to each configured alert
+	for _, alertName := range settings.Startup.Alerts {
+		if alertStrategy, exists := s.engine.alertStrategies[alertName]; exists {
 			if slack, ok := alertStrategy.(*SlackAlertStrategy); ok {
-				if err := slack.SendStartupMessage(ctx, version, monitorCount); err != nil {
-					log.Printf("Failed to send startup message to %s: %v", notifierName, err)
+				if err := slack.SendStartupMessage(ctx, version, targetCount); err != nil {
+					log.Printf("Failed to send startup message to %s: %v", alertName, err)
 				} else {
-					log.Printf("Startup message sent to %s successfully", notifierName)
+					log.Printf("Startup message sent to %s successfully", alertName)
 				}
 			} else if _, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
-				// For console notifiers, we can just log the startup message
-				log.Printf("🚀 Quick Watch started - Version: %s, Monitors: %d", version, monitorCount)
+				// For console alerts, we can just log the startup message
+				log.Printf("🚀 Quick Watch started - Version: %s, Targets: %d", version, targetCount)
 			}
 		} else {
-			log.Printf("Warning: Startup notifier '%s' not found or not available", notifierName)
+			log.Printf("Warning: Startup alert '%s' not found or not available", alertName)
 		}
 	}
 
-	// Check all monitors if enabled
-	if settings.Startup.CheckAllMonitors {
-		s.checkAllMonitorsOnStartup(ctx)
+	// Check all targets if enabled
+	if settings.Startup.CheckAllTargets {
+		s.checkAllTargetsOnStartup(ctx)
 	}
 }
 
-// checkAllMonitorsOnStartup checks all monitors and reports their health status
-func (s *Server) checkAllMonitorsOnStartup(ctx context.Context) {
-	log.Printf("🔍 Checking all monitors on startup...")
+// checkAllTargetsOnStartup checks all targets and reports their health status
+func (s *Server) checkAllTargetsOnStartup(ctx context.Context) {
+	log.Printf("🔍 Checking all targets on startup...")
 
 	settings := s.stateManager.GetSettings()
-	monitorConfig := s.stateManager.GetMonitorConfig()
+	targetConfig := s.stateManager.GetTargetConfig()
 
-	// Check each monitor
-	for _, monitor := range monitorConfig.Monitors {
-		// Get the check strategy for this monitor
-		checkStrategy, exists := s.engine.checkStrategies[monitor.CheckStrategy]
+	// Check each target
+	for _, target := range targetConfig.Targets {
+		// Get the check strategy for this target
+		checkStrategy, exists := s.engine.checkStrategies[target.CheckStrategy]
 		if !exists {
-			log.Printf("Warning: Check strategy '%s' not found for monitor %s", monitor.CheckStrategy, monitor.Name)
+			log.Printf("Warning: Check strategy '%s' not found for target %s", target.CheckStrategy, target.Name)
 			continue
 		}
 
 		// Perform the check
-		result, err := checkStrategy.Check(ctx, &monitor)
+		result, err := checkStrategy.Check(ctx, &target)
 		if err != nil {
-			log.Printf("Error checking monitor %s: %v", monitor.Name, err)
+			log.Printf("Error checking target %s: %v", target.Name, err)
 			continue
 		}
 
-		// Report the result to configured notifiers
-		for _, notifierName := range settings.Startup.Notifiers {
-			if alertStrategy, exists := s.engine.alertStrategies[notifierName]; exists {
+		// Report the result to configured alerts
+		for _, alertName := range settings.Startup.Alerts {
+			if alertStrategy, exists := s.engine.alertStrategies[alertName]; exists {
 				if slack, ok := alertStrategy.(*SlackAlertStrategy); ok {
 					// Send health status to Slack
-					if err := s.sendHealthStatusToSlack(ctx, slack, &monitor, result); err != nil {
-						log.Printf("Failed to send health status to %s for %s: %v", notifierName, monitor.Name, err)
+					if err := s.sendHealthStatusToSlack(ctx, slack, &target, result); err != nil {
+						log.Printf("Failed to send health status to %s for %s: %v", alertName, target.Name, err)
 					}
 				} else if _, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
 					// Log health status to console
-					s.logHealthStatusToConsole(&monitor, result)
+					s.logHealthStatusToConsole(&target, result)
 				}
 			}
 		}
@@ -430,21 +430,21 @@ func (s *Server) checkAllMonitorsOnStartup(ctx context.Context) {
 }
 
 // sendHealthStatusToSlack sends health status to Slack
-func (s *Server) sendHealthStatusToSlack(ctx context.Context, slack *SlackAlertStrategy, monitor *Monitor, result *CheckResult) error {
+func (s *Server) sendHealthStatusToSlack(ctx context.Context, slack *SlackAlertStrategy, target *Target, result *CheckResult) error {
 	if result.Success {
 		// Send all-clear message for healthy services
-		return slack.SendAllClear(ctx, monitor, result)
+		return slack.SendAllClear(ctx, target, result)
 	} else {
 		// Send alert message for unhealthy services
-		return slack.SendAlert(ctx, monitor, result)
+		return slack.SendAlert(ctx, target, result)
 	}
 }
 
 // logHealthStatusToConsole logs health status to console
-func (s *Server) logHealthStatusToConsole(monitor *Monitor, result *CheckResult) {
+func (s *Server) logHealthStatusToConsole(target *Target, result *CheckResult) {
 	if result.Success {
-		log.Printf("✅ %s: UP - Status: %d, Time: %v", monitor.Name, result.StatusCode, result.ResponseTime)
+		log.Printf("✅ %s: UP - Status: %d, Time: %v", target.Name, result.StatusCode, result.ResponseTime)
 	} else {
-		log.Printf("❌ %s: DOWN - Error: %s", monitor.Name, result.Error)
+		log.Printf("❌ %s: DOWN - Error: %s", target.Name, result.Error)
 	}
 }

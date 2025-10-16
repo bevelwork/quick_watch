@@ -6,14 +6,14 @@ version: "1.0"
 created: 2025-01-10T10:00:00Z
 updated: 2025-01-10T10:00:00Z
 
-monitors:
+targets:
   my-api:
     name: "My API Service"
     url: "https://api.example.com/health"
     method: "GET"
     threshold: 30  # seconds (30s)
     check_strategy: "http"
-    alert_strategy: "console"
+    alerts: "console"
   
   my-website:
     name: "My Website"
@@ -21,11 +21,10 @@ monitors:
     method: "GET"
     threshold: 60  # seconds (60s)
     check_strategy: "http"
-    alert_strategy: "slack-alerts"
+    alerts: "slack"
 
-notifiers:
+alerts:
   console:
-    name: "console"
     type: "console"
     enabled: true
     description: "Default console output"
@@ -33,8 +32,7 @@ notifiers:
       style: "stylized"
       color: true
   
-  slack-alerts:
-    name: "slack-alerts"
+  slack:
     type: "slack"
     enabled: true
     description: "Slack alerts channel"
@@ -43,25 +41,14 @@ notifiers:
       channel: "#alerts"
       username: "QuickWatch"
       icon_emoji: ":robot_face:"
-  
-  slack-dev:
-    name: "slack-dev"
-    type: "slack"
-    enabled: true
-    description: "Slack dev team channel"
-    settings:
-      webhook_url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
-      channel: "#dev"
-      username: "QuickWatch-Dev"
-      icon_emoji: ":gear:"
 
 settings:
   webhook_port: 8080
   webhook_path: "/webhook"
-  check_interval: 5
-  default_threshold: 30
+  check_interval: 5  # seconds (5s)
+  default_threshold: 30  # seconds (30s)
   startup:
     enabled: true
-    notifiers:
+    alerts:
       - console
-      - slack-alerts
+      - slack

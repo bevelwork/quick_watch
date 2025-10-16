@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Monitor represents a monitoring target
-type Monitor struct {
+// Target represents a targeting target
+type Target struct {
 	Name          string            `json:"name" yaml:"name"`
 	URL           string            `json:"url" yaml:"url"`
 	Method        string            `json:"method" yaml:"method,omitempty"`
@@ -17,7 +17,10 @@ type Monitor struct {
 	StatusCodes   []string          `json:"status_codes" yaml:"status_codes,omitempty"` // List of acceptable status codes (e.g., ["2**", "302"])
 	SizeAlerts    SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
 	CheckStrategy string            `json:"check_strategy" yaml:"check_strategy,omitempty"`
-	AlertStrategy string            `json:"alert_strategy" yaml:"alert_strategy,omitempty"`
+	// Preferred field supporting multiple alert strategies
+	Alerts []string `json:"alerts" yaml:"alerts,omitempty"`
+	// Legacy single alert strategy name (kept for backward compatibility)
+	AlertStrategy string `json:"alert_strategy,omitempty" yaml:"alert_strategy,omitempty"`
 }
 
 // SizeAlertConfig represents configuration for page size change detection
@@ -27,9 +30,9 @@ type SizeAlertConfig struct {
 	Threshold   float64 `json:"threshold" yaml:"threshold"`       // Percentage change threshold (default: 0.5 = 50%)
 }
 
-// MonitorConfig represents the configuration for monitors
-type MonitorConfig struct {
-	Monitors   []Monitor      `json:"monitors"`
+// TargetConfig represents the configuration for targets
+type TargetConfig struct {
+	Targets    []Target       `json:"targets"`
 	Webhook    WebhookConfig  `json:"webhook,omitempty"`
 	Strategies StrategyConfig `json:"strategies,omitempty"`
 }
@@ -73,35 +76,35 @@ type SlackNotifierSettings struct {
 // WebhookNotification represents an incoming webhook notification
 type WebhookNotification struct {
 	Type      string                 `json:"type"`
-	Monitor   string                 `json:"monitor"`
+	Target    string                 `json:"target"`
 	Message   string                 `json:"message"`
 	Timestamp time.Time              `json:"timestamp"`
 	Data      map[string]interface{} `json:"data,omitempty"`
 }
 
-// MonitorState represents the current state of a monitor
-type MonitorState struct {
-	Monitor       *Monitor
-	IsDown        bool
-	DownSince     *time.Time
-	LastCheck     *CheckResult
-	CheckStrategy CheckStrategy
-	AlertStrategy AlertStrategy
-	SizeHistory   []int64 // Track response sizes for change detection
+// TargetState represents the current state of a target
+type TargetState struct {
+	Target          *Target
+	IsDown          bool
+	DownSince       *time.Time
+	LastCheck       *CheckResult
+	CheckStrategy   CheckStrategy
+	AlertStrategies []AlertStrategy
+	SizeHistory     []int64 // Track response sizes for change detection
 }
 
-// MonitoringEngine represents the core monitoring engine
-type MonitoringEngine struct {
-	monitors               []*MonitorState
-	config                 *MonitorConfig
+// TargetEngine represents the core targeting engine
+type TargetEngine struct {
+	targets                []*TargetState
+	config                 *TargetConfig
 	checkStrategies        map[string]CheckStrategy
 	alertStrategies        map[string]AlertStrategy
 	notificationStrategies map[string]NotificationStrategy
 }
 
-// NewMonitoringEngine creates a new monitoring engine
-func NewMonitoringEngine(config *MonitorConfig, stateManager *StateManager) *MonitoringEngine {
-	engine := &MonitoringEngine{
+// NewTargetEngine creates a new targeting engine
+func NewTargetEngine(config *TargetConfig, stateManager *StateManager) *TargetEngine {
+	engine := &TargetEngine{
 		config:                 config,
 		checkStrategies:        make(map[string]CheckStrategy),
 		alertStrategies:        make(map[string]AlertStrategy),
@@ -111,14 +114,14 @@ func NewMonitoringEngine(config *MonitorConfig, stateManager *StateManager) *Mon
 	// Register default strategies
 	engine.registerDefaultStrategies(stateManager)
 
-	// Initialize monitors
-	engine.initializeMonitors()
+	// Initialize targets
+	engine.initializeTargets()
 
 	return engine
 }
 
 // registerDefaultStrategies registers the default strategies
-func (e *MonitoringEngine) registerDefaultStrategies(stateManager *StateManager) {
+func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 	// Check strategies
 	e.checkStrategies["http"] = NewHTTPCheckStrategy()
 
@@ -127,7 +130,7 @@ func (e *MonitoringEngine) registerDefaultStrategies(stateManager *StateManager)
 
 	// Register notifier-based strategies if stateManager is provided
 	if stateManager != nil {
-		notifiers := stateManager.GetNotifiers()
+		notifiers := stateManager.GetAlerts()
 		for name, notifier := range notifiers {
 			if notifier.Enabled {
 				switch notifier.Type {
@@ -161,44 +164,52 @@ func (e *MonitoringEngine) registerDefaultStrategies(stateManager *StateManager)
 	e.notificationStrategies["console"] = NewConsoleNotificationStrategy()
 }
 
-// initializeMonitors initializes monitors from configuration
-func (e *MonitoringEngine) initializeMonitors() {
-	for _, monitor := range e.config.Monitors {
-		state := &MonitorState{
-			Monitor: &monitor,
-			IsDown:  false,
+// initializeTargets initializes targets from configuration
+func (e *TargetEngine) initializeTargets() {
+	for _, target := range e.config.Targets {
+		state := &TargetState{
+			Target: &target,
+			IsDown: false,
 		}
 
 		// Set check strategy
-		if strategy, exists := e.checkStrategies[monitor.CheckStrategy]; exists {
+		if strategy, exists := e.checkStrategies[target.CheckStrategy]; exists {
 			state.CheckStrategy = strategy
 		} else {
 			state.CheckStrategy = e.checkStrategies["http"] // default
 		}
 
-		// Set alert strategy
-		if strategy, exists := e.alertStrategies[monitor.AlertStrategy]; exists {
-			state.AlertStrategy = strategy
-		} else {
-			state.AlertStrategy = e.alertStrategies["console"] // default
+		// Set alert strategies (supports multiple). Prefer new Alerts slice, fallback to legacy AlertStrategy.
+		strategyNames := target.Alerts
+		if len(strategyNames) == 0 {
+			if target.AlertStrategy != "" {
+				strategyNames = []string{target.AlertStrategy}
+			} else {
+				strategyNames = []string{"console"}
+			}
+		}
+		for _, name := range strategyNames {
+			if strategy, exists := e.alertStrategies[name]; exists {
+				state.AlertStrategies = append(state.AlertStrategies, strategy)
+			}
 		}
 
-		e.monitors = append(e.monitors, state)
+		e.targets = append(e.targets, state)
 	}
 }
 
-// Start begins monitoring all configured monitors
-func (e *MonitoringEngine) Start(ctx context.Context) error {
-	// Start monitoring loop for each monitor
-	for _, state := range e.monitors {
-		go e.monitorLoop(ctx, state)
+// Start begins targeting all configured targets
+func (e *TargetEngine) Start(ctx context.Context) error {
+	// Start targeting loop for each target
+	for _, state := range e.targets {
+		go e.targetLoop(ctx, state)
 	}
 
 	return nil
 }
 
-// monitorLoop runs the monitoring loop for a single monitor
-func (e *MonitoringEngine) monitorLoop(ctx context.Context, state *MonitorState) {
+// targetLoop runs the targeting loop for a single target
+func (e *TargetEngine) targetLoop(ctx context.Context, state *TargetState) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -207,14 +218,14 @@ func (e *MonitoringEngine) monitorLoop(ctx context.Context, state *MonitorState)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			e.checkMonitor(ctx, state)
+			e.checkTarget(ctx, state)
 		}
 	}
 }
 
-// checkMonitor performs a single check for a monitor
-func (e *MonitoringEngine) checkMonitor(ctx context.Context, state *MonitorState) {
-	result, err := state.CheckStrategy.Check(ctx, state.Monitor)
+// checkTarget performs a single check for a target
+func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
+	result, err := state.CheckStrategy.Check(ctx, state.Target)
 	if err != nil {
 		// Handle check error
 		result = &CheckResult{
@@ -238,9 +249,11 @@ func (e *MonitoringEngine) checkMonitor(ctx context.Context, state *MonitorState
 			avgSize := float64(sum) / float64(len(previousResponses))
 			changePercent := math.Abs(float64(result.ResponseSize)-avgSize) / avgSize
 
-			// Send size change alert
-			if consoleAlert, ok := state.AlertStrategy.(*ConsoleAlertStrategy); ok {
-				consoleAlert.SendSizeChangeAlert(ctx, state.Monitor, result, avgSize, changePercent)
+			// Send size change alert to console strategies
+			for _, strat := range state.AlertStrategies {
+				if consoleAlert, ok := strat.(*ConsoleAlertStrategy); ok {
+					consoleAlert.SendSizeChangeAlert(ctx, state.Target, result, avgSize, changePercent)
+				}
 			}
 		}
 	}
@@ -253,26 +266,32 @@ func (e *MonitoringEngine) checkMonitor(ctx context.Context, state *MonitorState
 		// Just went down
 		now := time.Now()
 		state.DownSince = &now
-		state.AlertStrategy.SendAlert(ctx, state.Monitor, result)
+		for _, strat := range state.AlertStrategies {
+			strat.SendAlert(ctx, state.Target, result)
+		}
 	} else if result.Success && wasDown {
 		// Just came back up
 		state.DownSince = nil
-		state.AlertStrategy.SendAllClear(ctx, state.Monitor, result)
+		for _, strat := range state.AlertStrategies {
+			strat.SendAllClear(ctx, state.Target, result)
+		}
 	} else if !result.Success && wasDown {
 		// Still down - check if we should send another alert
 		if state.DownSince != nil {
 			downDuration := time.Since(*state.DownSince)
-			threshold := time.Duration(state.Monitor.Threshold) * time.Second
+			threshold := time.Duration(state.Target.Threshold) * time.Second
 			if downDuration >= threshold {
 				// Send another alert if we've been down for the threshold
-				state.AlertStrategy.SendAlert(ctx, state.Monitor, result)
+				for _, strat := range state.AlertStrategies {
+					strat.SendAlert(ctx, state.Target, result)
+				}
 			}
 		}
 	}
 }
 
 // HandleWebhookNotification handles incoming webhook notifications
-func (e *MonitoringEngine) HandleWebhookNotification(ctx context.Context, notification *WebhookNotification) error {
+func (e *TargetEngine) HandleWebhookNotification(ctx context.Context, notification *WebhookNotification) error {
 	// Find the appropriate notification strategy
 	// For now, use console strategy
 	if strategy, exists := e.notificationStrategies["console"]; exists {
@@ -282,7 +301,7 @@ func (e *MonitoringEngine) HandleWebhookNotification(ctx context.Context, notifi
 	return nil
 }
 
-// GetMonitorStatus returns the current status of all monitors
-func (e *MonitoringEngine) GetMonitorStatus() []*MonitorState {
-	return e.monitors
+// GetTargetStatus returns the current status of all targets
+func (e *TargetEngine) GetTargetStatus() []*TargetState {
+	return e.targets
 }
