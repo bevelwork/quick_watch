@@ -38,8 +38,9 @@ type ServerSettings struct {
 
 // StartupConfig represents startup message configuration
 type StartupConfig struct {
-	Enabled   bool     `yaml:"enabled"`   // enable startup messages
-	Notifiers []string `yaml:"notifiers"` // list of notifiers to use
+	Enabled          bool     `yaml:"enabled"`            // enable startup messages
+	Notifiers        []string `yaml:"notifiers"`          // list of notifiers to use
+	CheckAllMonitors bool     `yaml:"check_all_monitors"` // check all monitors on startup
 }
 
 // NewStateManager creates a new state manager
@@ -57,8 +58,9 @@ func NewStateManager(filePath string) *StateManager {
 				CheckInterval:    5,
 				DefaultThreshold: 30,
 				Startup: StartupConfig{
-					Enabled:   true,
-					Notifiers: []string{"console"},
+					Enabled:          true,
+					Notifiers:        []string{"console"},
+					CheckAllMonitors: false,
 				},
 			},
 			Notifiers: make(map[string]NotifierConfig),

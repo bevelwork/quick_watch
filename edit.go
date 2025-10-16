@@ -486,6 +486,9 @@ func editSettings(stateManager *StateManager) {
 				}
 			}
 		}
+		if checkAllMonitors, ok := startupData["check_all_monitors"].(bool); ok {
+			settings.Startup.CheckAllMonitors = checkAllMonitors
+		}
 	}
 
 	// Handle legacy startup_message setting for backward compatibility
@@ -531,8 +534,9 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 		"check_interval":    settings.CheckInterval,
 		"default_threshold": settings.DefaultThreshold,
 		"startup": map[string]interface{}{
-			"enabled":   settings.Startup.Enabled,
-			"notifiers": settings.Startup.Notifiers,
+			"enabled":            settings.Startup.Enabled,
+			"notifiers":          settings.Startup.Notifiers,
+			"check_all_monitors": settings.Startup.CheckAllMonitors,
 		},
 	}
 
@@ -567,6 +571,7 @@ func addSettingsComments(data []byte) []byte {
 		"# startup:",
 		"#   enabled: true/false (default: true)",
 		"#   notifiers: [\"console\", \"slack-alerts\"] (default: [\"console\"])",
+		"#   check_all_monitors: true/false (default: false)",
 		"#",
 		"",
 	}

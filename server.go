@@ -380,4 +380,71 @@ func (s *Server) sendStartupMessage(ctx context.Context) {
 			log.Printf("Warning: Startup notifier '%s' not found or not available", notifierName)
 		}
 	}
+
+	// Check all monitors if enabled
+	if settings.Startup.CheckAllMonitors {
+		s.checkAllMonitorsOnStartup(ctx)
+	}
+}
+
+// checkAllMonitorsOnStartup checks all monitors and reports their health status
+func (s *Server) checkAllMonitorsOnStartup(ctx context.Context) {
+	log.Printf("🔍 Checking all monitors on startup...")
+
+	settings := s.stateManager.GetSettings()
+	monitorConfig := s.stateManager.GetMonitorConfig()
+
+	// Check each monitor
+	for _, monitor := range monitorConfig.Monitors {
+		// Get the check strategy for this monitor
+		checkStrategy, exists := s.engine.checkStrategies[monitor.CheckStrategy]
+		if !exists {
+			log.Printf("Warning: Check strategy '%s' not found for monitor %s", monitor.CheckStrategy, monitor.Name)
+			continue
+		}
+
+		// Perform the check
+		result, err := checkStrategy.Check(ctx, &monitor)
+		if err != nil {
+			log.Printf("Error checking monitor %s: %v", monitor.Name, err)
+			continue
+		}
+
+		// Report the result to configured notifiers
+		for _, notifierName := range settings.Startup.Notifiers {
+			if alertStrategy, exists := s.engine.alertStrategies[notifierName]; exists {
+				if slack, ok := alertStrategy.(*SlackAlertStrategy); ok {
+					// Send health status to Slack
+					if err := s.sendHealthStatusToSlack(ctx, slack, &monitor, result); err != nil {
+						log.Printf("Failed to send health status to %s for %s: %v", notifierName, monitor.Name, err)
+					}
+				} else if _, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
+					// Log health status to console
+					s.logHealthStatusToConsole(&monitor, result)
+				}
+			}
+		}
+	}
+
+	log.Printf("✅ Startup health check completed")
+}
+
+// sendHealthStatusToSlack sends health status to Slack
+func (s *Server) sendHealthStatusToSlack(ctx context.Context, slack *SlackAlertStrategy, monitor *Monitor, result *CheckResult) error {
+	if result.Success {
+		// Send all-clear message for healthy services
+		return slack.SendAllClear(ctx, monitor, result)
+	} else {
+		// Send alert message for unhealthy services
+		return slack.SendAlert(ctx, monitor, result)
+	}
+}
+
+// logHealthStatusToConsole logs health status to console
+func (s *Server) logHealthStatusToConsole(monitor *Monitor, result *CheckResult) {
+	if result.Success {
+		log.Printf("✅ %s: UP - Status: %d, Time: %v", monitor.Name, result.StatusCode, result.ResponseTime)
+	} else {
+		log.Printf("❌ %s: DOWN - Error: %s", monitor.Name, result.Error)
+	}
 }
