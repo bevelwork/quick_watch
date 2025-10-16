@@ -234,8 +234,7 @@ func handleEditTargets(stateFile string) {
 		return
 	}
 
-	// Apply defaults for missing values
-	applyDefaults(targetsMap)
+	// Do not apply defaults here: preserve existing state for unspecified fields
 
 	// Clean defaults for explicitly set fields
 	for url, target := range targetsMap {
@@ -247,6 +246,44 @@ func handleEditTargets(stateFile string) {
 
 	// Save the changes by updating the state manager
 	for url, target := range targetsMap {
+		// Merge with existing target to avoid overwriting unspecified fields
+		if existing, ok := stateManager.GetTarget(url); ok {
+			fields := targetFieldsMap[url]
+			if fields == nil {
+				fields = &TargetFields{}
+			}
+			// Preserve unspecified fields
+			if !fields.Method && target.Method == "" {
+				target.Method = existing.Method
+			}
+			if !fields.Headers && len(target.Headers) == 0 && existing.Headers != nil {
+				target.Headers = existing.Headers
+			}
+			if !fields.Threshold && target.Threshold == 0 {
+				target.Threshold = existing.Threshold
+			}
+			if !fields.StatusCodes && len(target.StatusCodes) == 0 && len(existing.StatusCodes) > 0 {
+				target.StatusCodes = existing.StatusCodes
+			}
+			if !fields.SizeAlerts && (target.SizeAlerts == (SizeAlertConfig{})) {
+				target.SizeAlerts = existing.SizeAlerts
+			}
+			if !fields.CheckStrategy && target.CheckStrategy == "" {
+				target.CheckStrategy = existing.CheckStrategy
+			}
+			if !fields.Alerts && len(target.Alerts) == 0 {
+				if len(existing.Alerts) > 0 {
+					target.Alerts = existing.Alerts
+				} else if existing.AlertStrategy != "" {
+					// Legacy fallback
+					target.Alerts = []string{existing.AlertStrategy}
+				}
+			}
+			if target.Name == "" {
+				target.Name = existing.Name
+			}
+		}
+
 		if err := stateManager.AddTarget(target); err != nil {
 			fmt.Printf("%s Failed to save target %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
 			return
@@ -278,8 +315,29 @@ func handleEditTargets(stateFile string) {
 			target.URL,
 		)
 		fmt.Println(qc.Colorize(entry, rowColor))
+		// Render effective defaults for display (editor preserves empties for state)
+		displayMethod := target.Method
+		if strings.TrimSpace(displayMethod) == "" {
+			displayMethod = "GET"
+		}
+		displayThreshold := target.Threshold
+		if displayThreshold == 0 {
+			displayThreshold = 30
+		}
+		displayCheck := target.CheckStrategy
+		if strings.TrimSpace(displayCheck) == "" {
+			displayCheck = "http"
+		}
+		displayAlerts := strings.Join(target.Alerts, ", ")
+		if strings.TrimSpace(displayAlerts) == "" {
+			if strings.TrimSpace(target.AlertStrategy) != "" {
+				displayAlerts = target.AlertStrategy
+			} else {
+				displayAlerts = "console"
+			}
+		}
 		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
-			target.Method, target.Threshold, target.CheckStrategy, strings.Join(target.Alerts, ", "))
+			displayMethod, displayThreshold, displayCheck, displayAlerts)
 		i++
 	}
 
