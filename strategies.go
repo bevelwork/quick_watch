@@ -172,10 +172,7 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRe
 	var responseSize int64
 	if resp.Body != nil {
 		// We'll estimate size from Content-Length header
-		responseSize = resp.ContentLength
-		if responseSize < 0 {
-			responseSize = 0 // Unknown size
-		}
+		responseSize = max(0, resp.ContentLength)
 	}
 
 	// Check if status code matches allowed status codes
@@ -292,7 +289,7 @@ func NewWebhookAlertStrategy(webhookURL string) *WebhookAlertStrategy {
 
 // SendAlert sends an alert via webhook
 func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"type":          "alert",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -302,12 +299,12 @@ func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, re
 		"status_code":   result.StatusCode,
 		"response_time": result.ResponseTime.String(),
 	}
-	return w.sendWebhook(ctx, payload)
+	return w.sendWebhook(payload)
 }
 
 // SendAllClear sends an all-clear notification via webhook
 func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"type":          "all_clear",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -316,11 +313,11 @@ func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target,
 		"status_code":   result.StatusCode,
 		"response_time": result.ResponseTime.String(),
 	}
-	return w.sendWebhook(ctx, payload)
+	return w.sendWebhook(payload)
 }
 
 // sendWebhook sends a webhook notification
-func (w *WebhookAlertStrategy) sendWebhook(ctx context.Context, payload map[string]interface{}) error {
+func (w *WebhookAlertStrategy) sendWebhook(payload map[string]any) error {
 	// This is a simplified implementation
 	// In a real implementation, you'd marshal the payload to JSON and send it
 	fmt.Printf("📡 WEBHOOK: Sending notification to %s\n", w.webhookURL)
@@ -354,14 +351,14 @@ func (s *SlackAlertStrategy) SendAlert(ctx context.Context, target *Target, resu
 	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "danger",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -402,14 +399,14 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 	message := fmt.Sprintf("✅ *%s* is UP\n• URL: %s\n• Status: %d\n• Time: %v",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -446,7 +443,7 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 }
 
 // sendSlackWebhook sends a notification to Slack
-func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]interface{}) error {
+func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]any) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal Slack payload: %v", err)
@@ -478,14 +475,14 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Targets: %d\n• Timestamp: %s",
 		version, targetCount, time.Now().Format("2006-01-02 15:04:05"))
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Service",
 						"value": "*Quick Watch*",
@@ -547,6 +544,65 @@ func (c *ConsoleNotificationStrategy) HandleNotification(ctx context.Context, no
 // Name returns the strategy name
 func (c *ConsoleNotificationStrategy) Name() string {
 	return "console"
+}
+
+// SlackNotificationStrategy sends generic notifications to a Slack webhook
+type SlackNotificationStrategy struct {
+	webhookURL string
+	client     *http.Client
+}
+
+// NewSlackNotificationStrategy constructs a SlackNotificationStrategy
+func NewSlackNotificationStrategy(webhookURL string) *SlackNotificationStrategy {
+	return &SlackNotificationStrategy{
+		webhookURL: webhookURL,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
+// HandleNotification posts a generic message to Slack
+func (s *SlackNotificationStrategy) HandleNotification(ctx context.Context, notification *WebhookNotification) error {
+	title := "Notification"
+	if notification.Type != "" {
+		title = notification.Type
+	}
+	message := fmt.Sprintf("%s: %s", title, notification.Message)
+	if notification.Target != "" {
+		message = fmt.Sprintf("%s — %s", notification.Target, message)
+	}
+	payload := map[string]any{
+		"text":   message,
+		"mrkdwn": true,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Slack payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.webhookURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create Slack request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send Slack webhook: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Slack webhook returned status %d", resp.StatusCode)
+	}
+	fmt.Printf("📡 SLACK: Sent generic notification to %s\n", s.webhookURL)
+	return nil
+}
+
+// Name returns the strategy name
+func (s *SlackNotificationStrategy) Name() string {
+	return "slack"
 }
 
 // EmailNotificationStrategy implements email-based notification handling

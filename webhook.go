@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,20 +16,24 @@ type WebhookServer struct {
 	path   string
 	engine *TargetEngine
 	server *http.Server
+	mux    *http.ServeMux
+	state  *StateManager
 }
 
 // NewWebhookServer creates a new webhook server
-func NewWebhookServer(port int, path string, engine *TargetEngine) *WebhookServer {
+func NewWebhookServer(port int, path string, engine *TargetEngine, state *StateManager) *WebhookServer {
 	return &WebhookServer{
 		port:   port,
 		path:   path,
 		engine: engine,
+		state:  state,
 	}
 }
 
 // Start starts the webhook server
 func (w *WebhookServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
+	w.mux = mux
 
 	// Webhook endpoint
 	mux.HandleFunc(w.path, w.handleWebhook)
@@ -38,6 +43,9 @@ func (w *WebhookServer) Start(ctx context.Context) error {
 
 	// Status endpoint
 	mux.HandleFunc("/status", w.handleStatus)
+
+	// Dynamic hook routes
+	w.registerHookRoutes()
 
 	w.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", w.port),
@@ -57,6 +65,93 @@ func (w *WebhookServer) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// registerHookRoutes registers named hook routes from engine/state
+func (w *WebhookServer) registerHookRoutes() {
+	if w.state == nil {
+		return
+	}
+	hooks := w.state.ListHooks()
+	for name, hook := range hooks {
+		// Always mount under /hooks/<name>
+		routePath := "/hooks/" + name
+		// Capture variables for handler closure
+		h := hook
+		w.mux.HandleFunc(routePath, func(wr http.ResponseWriter, r *http.Request) {
+			// Method check
+			if len(h.Methods) > 0 {
+				allowed := false
+				for _, m := range h.Methods {
+					if r.Method == m {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+			}
+
+			// Auth check
+			if h.Auth.BearerToken != "" {
+				auth := r.Header.Get("Authorization")
+				expected := "Bearer " + h.Auth.BearerToken
+				if auth != expected {
+					http.Error(wr, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+			if h.Auth.Username != "" || h.Auth.Password != "" {
+				u, p, ok := r.BasicAuth()
+				if !ok || u != h.Auth.Username || p != h.Auth.Password {
+					wr.Header().Set("WWW-Authenticate", "Basic realm=restricted")
+					http.Error(wr, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+
+			// Build notification from request
+			body := map[string]interface{}{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+
+			// Resolve message precedence: URL param 'msg' > body.msg > hook default
+			msg := h.Message
+			if q := r.URL.Query().Get("msg"); strings.TrimSpace(q) != "" {
+				msg = q
+				body["msg"] = q
+			} else if v, ok := body["msg"].(string); ok && strings.TrimSpace(v) != "" {
+				msg = v
+			}
+			if msg == "" {
+				msg = "hook triggered"
+			}
+			notification := &WebhookNotification{
+				Type:      "hook",
+				Target:    h.Name,
+				Message:   msg,
+				Timestamp: time.Now(),
+				Data:      body,
+			}
+
+			// Dispatch to selected notification strategies
+			if len(h.Alerts) == 0 {
+				h.Alerts = []string{"console"}
+			}
+			for _, alertName := range h.Alerts {
+				if strat, exists := w.engine.notificationStrategies[alertName]; exists {
+					if err := strat.HandleNotification(r.Context(), notification); err != nil {
+						log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+					}
+				}
+			}
+
+			wr.WriteHeader(http.StatusOK)
+			wr.Write([]byte("OK"))
+		})
+		log.Printf("Hook route registered: %s -> alerts=%v", routePath, hook.Alerts)
+	}
 }
 
 // Stop stops the webhook server

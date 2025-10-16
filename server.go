@@ -54,7 +54,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start webhook server if configured
 	if settings.WebhookPort > 0 {
-		s.webhookServer = NewWebhookServer(settings.WebhookPort, settings.WebhookPath, s.engine)
+		s.webhookServer = NewWebhookServer(settings.WebhookPort, settings.WebhookPath, s.engine, s.stateManager)
 		if err := s.webhookServer.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start webhook server: %v", err)
 		}
@@ -165,7 +165,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
@@ -194,16 +194,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	targets := s.engine.GetTargetStatus()
-	status := map[string]interface{}{
+	status := map[string]any{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
 		"state":     s.state,
-		"targets":   make([]map[string]interface{}, len(targets)),
+		"targets":   make([]map[string]any, len(targets)),
 	}
 
-	targetList := status["targets"].([]map[string]interface{})
+	targetList := status["targets"].([]map[string]any)
 	for i, state := range targets {
-		targetList[i] = map[string]interface{}{
+		targetList[i] = map[string]any{
 			"name":       state.Target.Name,
 			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
@@ -240,7 +240,7 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListTargets lists all targets
-func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 

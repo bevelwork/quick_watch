@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"maps"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +27,7 @@ type WatchState struct {
 	Targets  map[string]Target         `yaml:"targets"`
 	Settings ServerSettings            `yaml:"settings"`
 	Alerts   map[string]NotifierConfig `yaml:"alerts"`
+	Hooks    map[string]Hook           `yaml:"hooks"`
 }
 
 // ServerSettings represents server configuration
@@ -64,6 +67,7 @@ func NewStateManager(filePath string) *StateManager {
 				},
 			},
 			Alerts: make(map[string]NotifierConfig),
+			Hooks:  make(map[string]Hook),
 		},
 	}
 }
@@ -214,9 +218,7 @@ func (sm *StateManager) ListTargets() map[string]Target {
 
 	// Return a copy to avoid race conditions
 	result := make(map[string]Target)
-	for k, v := range sm.state.Targets {
-		result[k] = v
-	}
+	maps.Copy(result, sm.state.Targets)
 	return result
 }
 
@@ -257,11 +259,11 @@ func (sm *StateManager) GetTargetConfig() *TargetConfig {
 }
 
 // GetStateInfo returns basic state information
-func (sm *StateManager) GetStateInfo() map[string]interface{} {
+func (sm *StateManager) GetStateInfo() map[string]any {
 	sm.mutex.RLock()
 	defer sm.mutex.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"version":  sm.state.Version,
 		"created":  sm.state.Created,
 		"updated":  sm.state.Updated,
@@ -295,4 +297,60 @@ func (sm *StateManager) GetNotifier(name string) (NotifierConfig, bool) {
 
 	notifier, exists := sm.state.Alerts[name]
 	return notifier, exists
+}
+
+// ListHooks returns all configured hooks
+func (sm *StateManager) ListHooks() map[string]Hook {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+
+	result := make(map[string]Hook)
+	maps.Copy(result, sm.state.Hooks)
+	return result
+}
+
+// GetHook returns a hook by name
+func (sm *StateManager) GetHook(name string) (Hook, bool) {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+	hook, ok := sm.state.Hooks[name]
+	return hook, ok
+}
+
+// UpsertHook adds or updates a hook
+func (sm *StateManager) UpsertHook(name string, hook Hook) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+	if hook.Name == "" {
+		hook.Name = name
+	}
+	// Path stores the hook name (route is always /hooks/<name>)
+	if hook.Path == "" {
+		hook.Path = name
+	}
+	// Normalize any legacy full paths to just the name
+	hook.Path = strings.TrimPrefix(hook.Path, "/hooks/")
+	hook.Path = strings.TrimPrefix(hook.Path, "/")
+	if len(hook.Methods) == 0 {
+		hook.Methods = []string{"POST"}
+	}
+	if len(hook.Alerts) == 0 {
+		hook.Alerts = []string{"console"}
+	}
+	if hook.Metadata == nil {
+		hook.Metadata = make(map[string]string)
+	}
+	sm.state.Hooks[name] = hook
+	return sm.saveUnlocked()
+}
+
+// RemoveHook deletes a hook by name
+func (sm *StateManager) RemoveHook(name string) error {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+	if _, ok := sm.state.Hooks[name]; !ok {
+		return fmt.Errorf("hook %s not found", name)
+	}
+	delete(sm.state.Hooks, name)
+	return sm.saveUnlocked()
 }

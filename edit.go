@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -21,8 +23,8 @@ type DisplayLine struct {
 }
 
 // display formats a block of guidance lines, aligning descriptors to a dynamic column
-// equal to the longest content line width + 1.
-func display(lines []DisplayLine) []string {
+// equal to the longest content line width + 1. maxCol caps the left column width.
+func display(lines []DisplayLine, maxCol int) []string {
 	// Build left parts and compute max width
 	lefts := make([]string, len(lines))
 	descs := make([]string, len(lines))
@@ -40,9 +42,11 @@ func display(lines []DisplayLine) []string {
 		}
 	}
 
-	maxCeil := 38
-	if maxLen > maxCeil {
-		maxLen = maxCeil
+	if maxCol <= 0 {
+		maxCol = 38
+	}
+	if maxLen > maxCol {
+		maxLen = maxCol
 	}
 
 	// Compose final lines
@@ -56,9 +60,7 @@ func display(lines []DisplayLine) []string {
 		}
 		currentLen := utf8.RuneCountInString(left)
 		padding := (maxLen - currentLen) + 1
-		if padding < 1 {
-			padding = 1
-		}
+		padding = max(1, padding)
 		out = append(out, left+strings.Repeat(" ", padding)+d)
 	}
 	return out
@@ -131,7 +133,7 @@ func handleEditTargets(stateFile string) {
 	}
 
 	// Parse the modified configuration (simplified structure)
-	var targetsData map[string]interface{}
+	var targetsData map[string]any
 	if err := yaml.Unmarshal(modifiedData, &targetsData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -148,9 +150,9 @@ func handleEditTargets(stateFile string) {
 	}
 	if targetsInterface != nil {
 		// Accept either map[string]Target-like or []Target-like entries
-		if targetsMapInterface, ok := targetsInterface.(map[string]interface{}); ok {
+		if targetsMapInterface, ok := targetsInterface.(map[string]any); ok {
 			for url, targetInterface := range targetsMapInterface {
-				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+				if targetMap, ok := targetInterface.(map[string]any); ok {
 					target := Target{}
 					fields := &TargetFields{}
 
@@ -168,7 +170,7 @@ func handleEditTargets(stateFile string) {
 						target.Threshold = threshold
 						fields.Threshold = true
 					}
-					if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+					if statusCodes, ok := targetMap["status_codes"].([]any); ok {
 						fields.StatusCodes = true
 						for _, code := range statusCodes {
 							if codeStr, ok := code.(string); ok {
@@ -176,7 +178,7 @@ func handleEditTargets(stateFile string) {
 							}
 						}
 					}
-					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
+					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]any); ok {
 						fields.SizeAlerts = true
 						if enabled, ok := sizeAlerts["enabled"].(bool); ok {
 							target.SizeAlerts.Enabled = enabled
@@ -196,7 +198,7 @@ func handleEditTargets(stateFile string) {
 					// Check if headers was explicitly set (even if empty)
 					if _, headersExists := targetMap["headers"]; headersExists {
 						fields.Headers = true
-						if headers, ok := targetMap["headers"].(map[string]interface{}); ok {
+						if headers, ok := targetMap["headers"].(map[string]any); ok {
 							target.Headers = make(map[string]string)
 							for k, v := range headers {
 								if vStr, ok := v.(string); ok {
@@ -215,9 +217,9 @@ func handleEditTargets(stateFile string) {
 					targetFieldsMap[url] = fields
 				}
 			}
-		} else if targetsSlice, ok := targetsInterface.([]interface{}); ok {
+		} else if targetsSlice, ok := targetsInterface.([]any); ok {
 			for _, targetInterface := range targetsSlice {
-				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+				if targetMap, ok := targetInterface.(map[string]any); ok {
 					target := Target{}
 					fields := &TargetFields{}
 
@@ -235,7 +237,7 @@ func handleEditTargets(stateFile string) {
 						target.Threshold = threshold
 						fields.Threshold = true
 					}
-					if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+					if statusCodes, ok := targetMap["status_codes"].([]any); ok {
 						fields.StatusCodes = true
 						for _, code := range statusCodes {
 							if codeStr, ok := code.(string); ok {
@@ -243,7 +245,7 @@ func handleEditTargets(stateFile string) {
 							}
 						}
 					}
-					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
+					if sizeAlerts, ok := targetMap["size_alerts"].(map[string]any); ok {
 						fields.SizeAlerts = true
 						if enabled, ok := sizeAlerts["enabled"].(bool); ok {
 							target.SizeAlerts.Enabled = enabled
@@ -403,14 +405,14 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 	targets := stateManager.ListTargets()
 
 	// Create simplified YAML: top-level map with target name keys and minimal fields
-	simplified := make(map[string]map[string]interface{})
+	simplified := make(map[string]map[string]any)
 	for _, target := range targets {
 		// Prefer using existing name, fallback to URL
 		name := target.Name
 		if strings.TrimSpace(name) == "" {
 			name = target.URL
 		}
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"url": target.URL,
 		}
 		// Include alerts field to preserve user-set alerts
@@ -456,38 +458,6 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 	return tempFile.Name(), nil
 }
 
-// addEditComments adds helpful comments to the YAML for editing
-func addEditComments(data []byte) []byte {
-	lines := strings.Split(string(data), "\n")
-	rendered := display([]DisplayLine{
-		{0, "To remove a target: delete its entry", ""},
-		{0, "To modify a target: edit its properties", ""},
-		{0, "To add a target: add an object to the list.", ""},
-		{0, "__Required fields__: name, url", ""},
-		{0, "Alert alerts: [console, slack]", ""},
-		{0, "", ""},
-		{0, "Full example with all options:", ""},
-		{2, "my-full-config:", ""},
-		{4, "name: \"Comprehensive Target\"", ""},
-		{4, "url: \"https://api.example.com/health\"", ""},
-		{4, "method: \"GET\"", "# HTTP method (default: GET)"},
-		{4, "headers:", "# Custom headers (default: {})"},
-		{6, "Authorization: \"Bearer token\"", ""},
-		{6, "User-Agent: \"QuickWatch/1.0\"", ""},
-		{4, "threshold: 60", "# Down threshold in seconds (default: 30s)"},
-		{4, "status_codes: [\"200\", \"201\"]", "# Acceptable status codes (default: [\"*\"])"},
-		{4, "size_alerts:", "# Page size change detection (default: disabled)"},
-		{6, "enabled: true", ""},
-		{6, "history_size: 100", ""},
-		{6, "threshold: 0.5", ""},
-		{4, "check_strategy: \"http\"", "# Check strategy"},
-		{4, "alerts: [\"console\"]", "# Alert strategy"},
-		{0, "", ""},
-	})
-	commentedLines := append(rendered, lines...)
-	return []byte(strings.Join(commentedLines, "\n"))
-}
-
 // addEditCommentsForSimplified adds comments for the simplified targets editor
 func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte {
 	lines := strings.Split(string(data), "\n")
@@ -514,14 +484,14 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{2, "check_strategy: http", "# default: http"},
 		{2, "alerts: [console]", alertsDesc},
 		{0, "", ""},
-	})
+	}, 38)
 	commentedLines := append(rendered, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
 // validateYAML validates that the YAML is well-formed
 func validateYAML(data []byte) error {
-	var temp interface{}
+	var temp any
 	return yaml.Unmarshal(data, &temp)
 }
 
@@ -583,41 +553,6 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 	return nil
 }
 
-// applyDefaults applies default values to targets where properties are missing
-func applyDefaults(targets map[string]Target) {
-	for url, target := range targets {
-		// Clean defaults and show INFO messages
-		cleanAllDefaults(&target)
-
-		// Apply defaults only for missing values
-		if target.Method == "" {
-			target.Method = "GET"
-		}
-		if target.Threshold == 0 {
-			target.Threshold = 30
-		}
-		if target.CheckStrategy == "" {
-			target.CheckStrategy = "http"
-		}
-		if target.Headers == nil {
-			target.Headers = make(map[string]string)
-		}
-		if len(target.StatusCodes) == 0 {
-			target.StatusCodes = []string{"*"}
-		}
-		if target.SizeAlerts.HistorySize == 0 {
-			target.SizeAlerts = SizeAlertConfig{
-				Enabled:     true,
-				HistorySize: 100,
-				Threshold:   0.5, // 50% change threshold
-			}
-		}
-
-		// Update the map with the modified target
-		targets[url] = target
-	}
-}
-
 // editSettings allows editing global settings using $EDITOR
 func editSettings(stateManager *StateManager) {
 	fmt.Printf("%s Info: Opening editor: %s\n", qc.Colorize("✏️ Info:", qc.ColorCyan), os.Getenv("EDITOR"))
@@ -662,7 +597,7 @@ func editSettings(stateManager *StateManager) {
 	}
 
 	// Parse the modified settings
-	var settingsData map[string]interface{}
+	var settingsData map[string]any
 	if err := yaml.Unmarshal(modifiedData, &settingsData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -694,19 +629,19 @@ func editSettings(stateManager *StateManager) {
 	}
 
 	// Parse startup configuration
-	if startupData, ok := settingsData["startup"].(map[string]interface{}); ok {
+	if startupData, ok := settingsData["startup"].(map[string]any); ok {
 		if enabled, ok := startupData["enabled"].(bool); ok {
 			settings.Startup.Enabled = enabled
 		}
 		// New key: alerts
-		if al, ok := startupData["alerts"].([]interface{}); ok {
+		if al, ok := startupData["alerts"].([]any); ok {
 			settings.Startup.Alerts = make([]string, 0, len(al))
 			for _, a := range al {
 				if s, ok := a.(string); ok {
 					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
 				}
 			}
-		} else if alerts, ok := startupData["alerts"].([]interface{}); ok { // legacy
+		} else if alerts, ok := startupData["alerts"].([]any); ok { // legacy
 			settings.Startup.Alerts = make([]string, 0, len(alerts))
 			for _, alert := range alerts {
 				if alertStr, ok := alert.(string); ok {
@@ -756,12 +691,12 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 	settings := stateManager.GetSettings()
 
 	// Create settings YAML structure
-	settingsOnly := map[string]interface{}{
+	settingsOnly := map[string]any{
 		"webhook_port":      settings.WebhookPort,
 		"webhook_path":      settings.WebhookPath,
 		"check_interval":    settings.CheckInterval,
 		"default_threshold": settings.DefaultThreshold,
-		"startup": map[string]interface{}{
+		"startup": map[string]any{
 			"enabled":           settings.Startup.Enabled,
 			"alerts":            settings.Startup.Alerts,
 			"check_all_targets": settings.Startup.CheckAllTargets,
@@ -802,15 +737,283 @@ func addSettingsComments(data []byte) []byte {
 		{2, "check_all_targets: true/false", "(default: false)"},
 		{0, "", ""},
 		{0, "", ""},
-	})
+	}, 38)
 	commentedLines := append(rendered, lines...)
 
 	return []byte(strings.Join(commentedLines, "\n"))
 }
 
+// handleHooksCommand handles the hooks action
+func handleHooksCommand(args []string) {
+	stateFile := getStateFile(args)
+	// stdin mode: echo "" | quick_watch hooks --stdin
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
+		}
+		sm := NewStateManager(stateFile)
+		if err := sm.Load(); err != nil {
+			log.Printf("Warning: Could not load existing state: %v", err)
+		}
+		applyHooksYAML(sm, data)
+		return
+	}
+
+	// Default: open hooks in editor
+	sm := NewStateManager(stateFile)
+	if err := sm.Load(); err != nil {
+		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		os.Exit(1)
+	}
+	editHooks(sm)
+}
+
+// applyHooksYAML ingests hooks YAML content and saves changes
+func applyHooksYAML(stateManager *StateManager, modifiedData []byte) {
+	// Empty input is a no-op success
+	if len(strings.TrimSpace(string(modifiedData))) == 0 {
+		fmt.Printf("%s No hooks provided; nothing to do.\n", qc.Colorize("✅ Success:", qc.ColorGreen))
+		return
+	}
+
+	// Validate YAML
+	if err := validateYAML(modifiedData); err != nil {
+		fmt.Printf("%s Invalid YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		fmt.Println("Please fix the errors and try again.")
+		return
+	}
+
+	// Accept formats:
+	// - top-level hooks: { hooks: { name: {name, alerts, auth, metadata...} } }
+	// - simplified top-level: { name: {name, alerts, auth, metadata...} }
+	var raw map[string]any
+	if err := yaml.Unmarshal(modifiedData, &raw); err != nil {
+		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	var iter map[string]any
+	if v, ok := raw["hooks"].(map[string]any); ok {
+		iter = v
+	} else {
+		iter = raw
+	}
+
+	hooks := make(map[string]Hook)
+	for name, val := range iter {
+		hm, ok := val.(map[string]any)
+		if !ok {
+			continue
+		}
+		hook := Hook{Name: name}
+		// prefer explicit name field; fall back to map key
+		if v, ok := hm["name"].(string); ok && strings.TrimSpace(v) != "" {
+			hook.Name = v
+			hook.Path = v
+		}
+		if v, ok := hm["message"].(string); ok {
+			hook.Message = v
+		}
+		if v, ok := hm["methods"].([]any); ok {
+			for _, m := range v {
+				if s, ok := m.(string); ok && strings.TrimSpace(s) != "" {
+					hook.Methods = append(hook.Methods, s)
+				}
+			}
+		}
+		if v, ok := hm["alerts"].([]any); ok {
+			for _, a := range v {
+				if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
+					hook.Alerts = append(hook.Alerts, s)
+				}
+			}
+		} else if v, ok := hm["alerts"].(string); ok && strings.TrimSpace(v) != "" {
+			hook.Alerts = []string{v}
+		}
+		// metadata: allow empty string to mean empty object
+		if v, ok := hm["metadata"].(map[string]any); ok {
+			hook.Metadata = make(map[string]string)
+			for k, vv := range v {
+				if sv, ok := vv.(string); ok {
+					hook.Metadata[k] = sv
+				}
+			}
+		} else if v, ok := hm["metadata"].(string); ok && strings.TrimSpace(v) == "" {
+			hook.Metadata = map[string]string{}
+		}
+		// auth: allow empty string to mean empty object
+		if v, ok := hm["auth"].(map[string]any); ok {
+			if s, ok := v["bearer_token"].(string); ok {
+				hook.Auth.BearerToken = s
+			}
+			if s, ok := v["username"].(string); ok {
+				hook.Auth.Username = s
+			}
+			if s, ok := v["password"].(string); ok {
+				hook.Auth.Password = s
+			}
+		} else if v, ok := hm["auth"].(string); ok && strings.TrimSpace(v) == "" {
+			// leave zero-value auth
+		}
+		hooks[name] = hook
+	}
+
+	// Validate and save hooks
+	for name, hook := range hooks {
+		// basic validation
+		if strings.TrimSpace(hook.Name) == "" {
+			fmt.Printf("%s hook '%s' has empty name\n", qc.Colorize("❌ Error:", qc.ColorRed), name)
+			return
+		}
+		if len(hook.Methods) == 0 {
+			hook.Methods = []string{"POST"}
+		}
+		if len(hook.Alerts) == 0 {
+			hook.Alerts = []string{"console"}
+		}
+		if err := stateManager.UpsertHook(name, hook); err != nil {
+			fmt.Printf("%s Failed to save hook %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), name, err)
+			return
+		}
+	}
+
+	fmt.Printf("%s Hooks updated successfully! (%d)\n", qc.Colorize("✅ Success:", qc.ColorGreen), len(hooks))
+}
+
+// editHooks allows editing hooks using $EDITOR
+func editHooks(stateManager *StateManager) {
+	fmt.Printf("%s Info: Opening editor: %s\n", qc.Colorize("✏️ Info:", qc.ColorCyan), os.Getenv("EDITOR"))
+	fmt.Printf("State file: %s\n\n", stateManager.filePath)
+
+	// Create temporary file with current hooks
+	tempFile, err := createTempHooksFile(stateManager)
+	if err != nil {
+		fmt.Printf("%s Failed to create temporary file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+	defer os.Remove(tempFile)
+
+	// Open editor
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim" // Default editor
+	}
+
+	cmd := exec.Command(editor, tempFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("%s Editor exited with error: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	// Read the modified hooks
+	modifiedData, err := os.ReadFile(tempFile)
+	if err != nil {
+		fmt.Printf("%s Failed to read modified file: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+		return
+	}
+
+	// Apply via existing YAML ingestion
+	applyHooksYAML(stateManager, modifiedData)
+}
+
+// createTempHooksFile creates a temporary file with the current hooks for editing
+func createTempHooksFile(stateManager *StateManager) (string, error) {
+	// Create temporary file
+	tempFile, err := os.CreateTemp("", "quick_watch_hooks_*.yml")
+	if err != nil {
+		return "", err
+	}
+	defer tempFile.Close()
+
+	// Get current hooks
+	hooks := stateManager.ListHooks()
+
+	// Simplified YAML: top-level map name -> hook fields (omit empty).
+	// Name is the route name; routes are always /hooks/<name>
+	simplified := make(map[string]map[string]any)
+	for name, h := range hooks {
+		entry := map[string]any{}
+		entry["name"] = name
+		if len(h.Methods) > 0 {
+			entry["methods"] = h.Methods
+		}
+		if len(h.Alerts) > 0 {
+			entry["alerts"] = h.Alerts
+		}
+		if strings.TrimSpace(h.Message) != "" {
+			entry["message"] = h.Message
+		}
+		if len(h.Metadata) > 0 {
+			entry["metadata"] = h.Metadata
+		} else {
+			entry["metadata"] = ""
+		}
+		auth := map[string]any{}
+		if strings.TrimSpace(h.Auth.BearerToken) != "" {
+			auth["bearer_token"] = h.Auth.BearerToken
+		}
+		if strings.TrimSpace(h.Auth.Username) != "" {
+			auth["username"] = h.Auth.Username
+		}
+		if strings.TrimSpace(h.Auth.Password) != "" {
+			auth["password"] = h.Auth.Password
+		}
+		if len(auth) > 0 {
+			entry["auth"] = auth
+		} else {
+			entry["auth"] = ""
+		}
+		simplified[name] = entry
+	}
+
+	data, err := yaml.Marshal(simplified)
+	if err != nil {
+		return "", err
+	}
+
+	// Add helpful comments
+	commented := addHooksComments(data)
+
+	if _, err := tempFile.Write(commented); err != nil {
+		return "", err
+	}
+	return tempFile.Name(), nil
+}
+
+// addHooksComments adds helpful comments to the hooks YAML for editing
+func addHooksComments(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	rendered := display([]DisplayLine{
+		{0, "Edit hooks below. Each key is the hook name.", ""},
+		{0, "Routes are always mounted at /hooks/<name>.", ""},
+		{0, "Use 'name' to set the route; defaults: methods=[POST], alerts=[console]", ""},
+		{0, "Examples:", ""},
+		{0, "deploy:", ""},
+		{2, "name: deploy", "# route will be /hooks/deploy"},
+		{2, "methods: [POST]", "# optional"},
+		{2, "alerts: [console, slack]", "# optional"},
+		{2, "message: Deployment triggered", "# optional"},
+		{2, "auth:", "# optional; set to \"\" for empty"},
+		{4, "bearer_token: yourtoken", ""},
+		{4, "# or:", ""},
+		{4, "username: user", ""},
+		{4, "password: pass", ""},
+		{2, "metadata:", "# optional; set to \"\" for empty"},
+		{0, "", ""},
+	}, 38)
+	commentedLines := append(rendered, lines...)
+	return []byte(strings.Join(commentedLines, "\n"))
+}
+
 // validateSettingsYAML validates that the settings YAML is well-formed
 func validateSettingsYAML(data []byte) error {
-	var temp interface{}
+	var temp any
 	return yaml.Unmarshal(data, &temp)
 }
 
@@ -881,7 +1084,7 @@ func editAlerts(stateManager *StateManager) {
 	}
 
 	// Parse the modified alerts (new) or alerts (legacy)
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := yaml.Unmarshal(modifiedData, &raw); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -889,21 +1092,21 @@ func editAlerts(stateManager *StateManager) {
 
 	// Extract alerts
 	alerts := make(map[string]NotifierConfig)
-	var iter map[string]interface{}
-	if v, ok := raw["alerts"].(map[string]interface{}); ok {
+	var iter map[string]any
+	if v, ok := raw["alerts"].(map[string]any); ok {
 		iter = v
-	} else if v, ok := raw["alerts"].(map[string]interface{}); ok { // legacy fallback
+	} else if v, ok := raw["alerts"].(map[string]any); ok { // legacy fallback
 		iter = v
 	} else {
 		// Simplified top-level map format: alertName: { type: ..., ... }
 		iter = raw
 	}
 	for name, alertInterface := range iter {
-		if alertMap, ok := alertInterface.(map[string]interface{}); ok {
+		if alertMap, ok := alertInterface.(map[string]any); ok {
 			alert := NotifierConfig{
 				Name:     name,
 				Enabled:  true,
-				Settings: make(map[string]interface{}),
+				Settings: make(map[string]any),
 			}
 
 			if alertType, ok := alertMap["type"].(string); ok {
@@ -915,7 +1118,7 @@ func editAlerts(stateManager *StateManager) {
 			if description, ok := alertMap["description"].(string); ok {
 				alert.Description = description
 			}
-			if settings, ok := alertMap["settings"].(map[string]interface{}); ok {
+			if settings, ok := alertMap["settings"].(map[string]any); ok {
 				alert.Settings = settings
 			}
 
@@ -959,7 +1162,7 @@ func createTempAlertsFile(stateManager *StateManager) (string, error) {
 				Type:        "console",
 				Enabled:     true,
 				Description: "Console output",
-				Settings: map[string]interface{}{
+				Settings: map[string]any{
 					"style": "stylized",
 					"color": true,
 				},
@@ -968,9 +1171,9 @@ func createTempAlertsFile(stateManager *StateManager) (string, error) {
 	}
 
 	// Marshal to simplified top-level map, omitting the name field per entry
-	simplified := make(map[string]map[string]interface{})
+	simplified := make(map[string]map[string]any)
 	for key, n := range alerts {
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"type":    n.Type,
 			"enabled": n.Enabled,
 		}
@@ -1026,7 +1229,7 @@ func addAlertsComments(data []byte) []byte {
 		{4, "icon_emoji: \":robot_face:\"", ""},
 		{0, "", ""},
 		{0, "", ""},
-	})
+	}, 38)
 	commentedLines := append(rendered, lines...)
 	return []byte(strings.Join(commentedLines, "\n"))
 }
@@ -1144,7 +1347,7 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 		fmt.Println("Please fix the errors and try again.")
 		return
 	}
-	var settingsData map[string]interface{}
+	var settingsData map[string]any
 	if err := yaml.Unmarshal(modifiedData, &settingsData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
@@ -1168,25 +1371,25 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 	if v, ok := settingsData["default_threshold"].(int); ok {
 		settings.DefaultThreshold = v
 	}
-	if startupData, ok := settingsData["startup"].(map[string]interface{}); ok {
+	if startupData, ok := settingsData["startup"].(map[string]any); ok {
 		if v, ok := startupData["enabled"].(bool); ok {
 			settings.Startup.Enabled = v
 		}
-		if al, ok := startupData["alerts"].([]interface{}); ok {
+		if al, ok := startupData["alerts"].([]any); ok {
 			settings.Startup.Alerts = make([]string, 0, len(al))
 			for _, a := range al {
 				if s, ok := a.(string); ok {
 					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
 				}
 			}
-		} else if al, ok := startupData["notifiers"].([]interface{}); ok {
+		} else if al, ok := startupData["notifiers"].([]any); ok {
 			settings.Startup.Alerts = make([]string, 0, len(al))
 			for _, a := range al {
 				if s, ok := a.(string); ok {
 					settings.Startup.Alerts = append(settings.Startup.Alerts, s)
 				}
 			}
-		} else if al, ok := startupData["alert_strategies"].([]interface{}); ok {
+		} else if al, ok := startupData["alert_strategies"].([]any); ok {
 			settings.Startup.Alerts = make([]string, 0, len(al))
 			for _, a := range al {
 				if s, ok := a.(string); ok {
@@ -1250,23 +1453,23 @@ func applyAlertsYAML(stateManager *StateManager, modifiedData []byte) {
 		fmt.Println("Please fix the errors and try again.")
 		return
 	}
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := yaml.Unmarshal(modifiedData, &raw); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		return
 	}
 	alerts := make(map[string]NotifierConfig)
-	var iter map[string]interface{}
-	if v, ok := raw["alerts"].(map[string]interface{}); ok {
+	var iter map[string]any
+	if v, ok := raw["alerts"].(map[string]any); ok {
 		iter = v
-	} else if v, ok := raw["alerts"].(map[string]interface{}); ok {
+	} else if v, ok := raw["alerts"].(map[string]any); ok {
 		iter = v
 	} else {
 		iter = raw
 	}
 	for name, alertInterface := range iter {
-		if alertMap, ok := alertInterface.(map[string]interface{}); ok {
-			alert := NotifierConfig{Name: name, Enabled: true, Settings: make(map[string]interface{})}
+		if alertMap, ok := alertInterface.(map[string]any); ok {
+			alert := NotifierConfig{Name: name, Enabled: true, Settings: make(map[string]any)}
 			if v, ok := alertMap["type"].(string); ok {
 				alert.Type = v
 			}
@@ -1276,7 +1479,7 @@ func applyAlertsYAML(stateManager *StateManager, modifiedData []byte) {
 			if v, ok := alertMap["description"].(string); ok {
 				alert.Description = v
 			}
-			if v, ok := alertMap["settings"].(map[string]interface{}); ok {
+			if v, ok := alertMap["settings"].(map[string]any); ok {
 				alert.Settings = v
 			}
 			alerts[name] = alert
@@ -1340,7 +1543,7 @@ func applyAlertsYAML(stateManager *StateManager, modifiedData []byte) {
 
 // parseTargetsFromYAML parses targets from any of the supported editor formats
 func parseTargetsFromYAML(data []byte) (map[string]Target, map[string]*TargetFields, error) {
-	var targetsData map[string]interface{}
+	var targetsData map[string]any
 	if err := yaml.Unmarshal(data, &targetsData); err != nil {
 		return nil, nil, err
 	}
@@ -1367,11 +1570,11 @@ func parseTargetsFromYAML(data []byte) (map[string]Target, map[string]*TargetFie
 }
 
 // parseTargetsInterface fills maps from either map[string]any or []any structures
-func parseTargetsInterface(src interface{}, out map[string]Target, fields map[string]*TargetFields) {
+func parseTargetsInterface(src any, out map[string]Target, fields map[string]*TargetFields) {
 	switch v := src.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		for key, targetInterface := range v {
-			if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+			if targetMap, ok := targetInterface.(map[string]any); ok {
 				target := Target{}
 				f := &TargetFields{}
 				if name, ok := targetMap["name"].(string); ok && name != "" {
@@ -1390,7 +1593,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 					target.Threshold = threshold
 					f.Threshold = true
 				}
-				if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+				if statusCodes, ok := targetMap["status_codes"].([]any); ok {
 					f.StatusCodes = true
 					for _, code := range statusCodes {
 						if codeStr, ok := code.(string); ok {
@@ -1398,7 +1601,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 						}
 					}
 				}
-				if headers, ok := targetMap["headers"].(map[string]interface{}); ok {
+				if headers, ok := targetMap["headers"].(map[string]any); ok {
 					f.Headers = true
 					target.Headers = make(map[string]string)
 					for hk, hv := range headers {
@@ -1407,7 +1610,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 						}
 					}
 				}
-				if sizeAlerts, ok := targetMap["size_alerts"].(map[string]interface{}); ok {
+				if sizeAlerts, ok := targetMap["size_alerts"].(map[string]any); ok {
 					f.SizeAlerts = true
 					if enabled, ok := sizeAlerts["enabled"].(bool); ok {
 						target.SizeAlerts.Enabled = enabled
@@ -1431,7 +1634,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 							target.Alerts = []string{at}
 							f.Alerts = true
 						}
-					case []interface{}:
+					case []any:
 						for _, a := range at {
 							if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
 								target.Alerts = append(target.Alerts, s)
@@ -1448,9 +1651,9 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 				}
 			}
 		}
-	case []interface{}:
+	case []any:
 		for _, targetInterface := range v {
-			if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+			if targetMap, ok := targetInterface.(map[string]any); ok {
 				target := Target{}
 				f := &TargetFields{}
 				if name, ok := targetMap["name"].(string); ok {
@@ -1467,7 +1670,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 					target.Threshold = threshold
 					f.Threshold = true
 				}
-				if statusCodes, ok := targetMap["status_codes"].([]interface{}); ok {
+				if statusCodes, ok := targetMap["status_codes"].([]any); ok {
 					f.StatusCodes = true
 					for _, code := range statusCodes {
 						if codeStr, ok := code.(string); ok {
@@ -1483,7 +1686,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 							target.Alerts = []string{at}
 							f.Alerts = true
 						}
-					case []interface{}:
+					case []any:
 						for _, a := range at {
 							if s, ok := a.(string); ok && strings.TrimSpace(s) != "" {
 								target.Alerts = append(target.Alerts, s)
@@ -1505,7 +1708,7 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 
 // validateAlertsYAML validates that the alerts YAML is well-formed
 func validateAlertsYAML(data []byte) error {
-	var temp interface{}
+	var temp any
 	return yaml.Unmarshal(data, &temp)
 }
 
@@ -1643,7 +1846,7 @@ func validateConfigFile(configFile string, verbose bool) {
 	}
 
 	// Parse the full YAML structure
-	var configData map[string]interface{}
+	var configData map[string]any
 	if err := yaml.Unmarshal(data, &configData); err != nil {
 		fmt.Printf("%s Failed to parse YAML: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
@@ -1655,9 +1858,9 @@ func validateConfigFile(configFile string, verbose bool) {
 
 	// Parse targets
 	if targetsData, exists := configData["targets"]; exists {
-		if targetsMap, ok := targetsData.(map[string]interface{}); ok {
+		if targetsMap, ok := targetsData.(map[string]any); ok {
 			for url, targetInterface := range targetsMap {
-				if targetMap, ok := targetInterface.(map[string]interface{}); ok {
+				if targetMap, ok := targetInterface.(map[string]any); ok {
 					target := Target{}
 					if name, ok := targetMap["name"].(string); ok {
 						target.Name = name
@@ -1682,13 +1885,13 @@ func validateConfigFile(configFile string, verbose bool) {
 
 	// Parse alerts
 	if alertsData, exists := configData["alerts"]; exists {
-		if alertsMap, ok := alertsData.(map[string]interface{}); ok {
+		if alertsMap, ok := alertsData.(map[string]any); ok {
 			for name, alertInterface := range alertsMap {
-				if alertMap, ok := alertInterface.(map[string]interface{}); ok {
+				if alertMap, ok := alertInterface.(map[string]any); ok {
 					alert := NotifierConfig{
 						Name:     name,
 						Enabled:  true,
-						Settings: make(map[string]interface{}),
+						Settings: make(map[string]any),
 					}
 					if alertType, ok := alertMap["type"].(string); ok {
 						alert.Type = alertType
@@ -1699,7 +1902,7 @@ func validateConfigFile(configFile string, verbose bool) {
 					if description, ok := alertMap["description"].(string); ok {
 						alert.Description = description
 					}
-					if settings, ok := alertMap["settings"].(map[string]interface{}); ok {
+					if settings, ok := alertMap["settings"].(map[string]any); ok {
 						alert.Settings = settings
 					}
 					alerts[name] = alert
@@ -1774,33 +1977,4 @@ func validateConfigFile(configFile string, verbose bool) {
 		}
 		os.Exit(1)
 	}
-}
-
-// getValidAlerts returns a map of valid alert alerts from alerts
-func getValidAlerts(alerts map[string]NotifierConfig) map[string]bool {
-	validStrategies := make(map[string]bool)
-	validStrategies["console"] = true // Default console strategy
-
-	for name, alert := range alerts {
-		if alert.Enabled {
-			validStrategies[name] = true
-		}
-	}
-
-	return validStrategies
-}
-
-// getValidStrategiesList returns a comma-separated list of valid alerts
-func getValidStrategiesList(validStrategies map[string]bool) string {
-	alerts := []string{}
-	for strategy := range validStrategies {
-		alerts = append(alerts, strategy)
-	}
-	return strings.Join(alerts, ", ")
-}
-
-// isValidAlertStrategy checks if an alert strategy is valid for the engine
-func isValidAlertStrategy(strategy string, engine *TargetEngine) bool {
-	_, exists := engine.alertStrategies[strategy]
-	return exists
 }

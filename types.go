@@ -50,6 +50,26 @@ type StrategyConfig struct {
 	Notification map[string]json.RawMessage `json:"notification,omitempty"`
 }
 
+// Hook represents a named incoming HTTP hook route that can trigger notifications
+type Hook struct {
+	Name     string            `json:"name" yaml:"name"`
+	Path     string            `json:"path" yaml:"path"`
+	Methods  []string          `json:"methods" yaml:"methods,omitempty"`
+	Alerts   []string          `json:"alerts" yaml:"alerts,omitempty"` // notifier names (e.g., slack, console)
+	Auth     HookAuth          `json:"auth" yaml:"auth,omitempty"`
+	Message  string            `json:"message" yaml:"message,omitempty"`
+	Metadata map[string]string `json:"metadata" yaml:"metadata,omitempty"`
+}
+
+// HookAuth defines optional authentication for a hook route
+type HookAuth struct {
+	// If set, require Authorization: Bearer <Token>
+	BearerToken string `json:"bearer_token" yaml:"bearer_token,omitempty"`
+	// If set, require HTTP Basic Auth
+	Username string `json:"username" yaml:"username,omitempty"`
+	Password string `json:"password" yaml:"password,omitempty"`
+}
+
 // NotifierConfig represents a notification configuration
 type NotifierConfig struct {
 	Name        string                 `json:"name" yaml:"name"`
@@ -137,12 +157,15 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 				case "slack":
 					if webhookURL, ok := notifier.Settings["webhook_url"].(string); ok && webhookURL != "" {
 						e.alertStrategies[name] = NewSlackAlertStrategy(webhookURL)
+						// Register a notification strategy with the same name for hooks
+						e.notificationStrategies[name] = NewSlackNotificationStrategy(webhookURL)
 					}
 				case "console":
 					// Console is already registered as default
 					if name != "console" {
 						e.alertStrategies[name] = NewConsoleAlertStrategy()
 					}
+					e.notificationStrategies[name] = NewConsoleNotificationStrategy()
 				}
 			}
 		}
@@ -160,8 +183,10 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 		}
 	}
 
-	// Notification strategies
-	e.notificationStrategies["console"] = NewConsoleNotificationStrategy()
+	// Ensure default console notification exists
+	if _, ok := e.notificationStrategies["console"]; !ok {
+		e.notificationStrategies["console"] = NewConsoleNotificationStrategy()
+	}
 }
 
 // initializeTargets initializes targets from configuration

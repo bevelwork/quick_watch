@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -54,6 +55,8 @@ func main() {
 		handleSettingsCommand(args)
 	case "alerts", "notifiers":
 		handleNotifiersCommand(args)
+	case "hooks":
+		handleHooksCommand(args)
 	case "validate":
 		handleValidateCommand(args)
 	case "add":
@@ -77,50 +80,58 @@ func main() {
 // showHelp displays the help information
 func showHelp() {
 	fmt.Printf("Usage: %s <action> [options]\n\n", os.Args[0])
-	fmt.Println("Simple Actions:")
-	fmt.Println("  add <url>     Add a target with default settings")
-	fmt.Println("  rm <url>      Remove a target")
-	fmt.Println("  list          List all targets")
-	fmt.Println("  server        Start the server")
-	fmt.Println("")
-	fmt.Println("Advanced Actions:")
-	fmt.Println("  targets       Edit targets using $EDITOR")
-	fmt.Println("  settings      Edit global settings using $EDITOR")
-	fmt.Println("  alerts        Edit alert configs using $EDITOR")
-	fmt.Println("")
-	fmt.Println("Administrative Actions:")
-	fmt.Println("  validate      Validate configuration syntax and alert strategies")
-	fmt.Println("  config <file> Use YAML configuration file")
-	fmt.Println("")
-	fmt.Println("Examples:")
-	fmt.Printf("  %s targets\n", os.Args[0])
-	fmt.Printf("  %s add https://api.example.com/health --threshold 30s\n", os.Args[0])
-	fmt.Printf("  %s rm https://api.example.com/health\n", os.Args[0])
-	fmt.Printf("  %s list\n", os.Args[0])
-	fmt.Printf("  %s config\n", os.Args[0])
-	fmt.Printf("  %s server --webhook-port 8080\n", os.Args[0])
+
+	// Build help sections using display for aligned indentation
+	lines := []DisplayLine{
+		{0, "Simple Actions:", ""},
+		{2, "add <url>", "Add a target with default settings"},
+		{2, "rm <url>", "Remove a target"},
+		{2, "list", "List all targets"},
+		{2, "server", "Start the server"},
+		{0, "", ""},
+		{0, "Advanced Actions:", ""},
+		{2, "targets", "Edit targets using $EDITOR"},
+		{2, "settings", "Edit global settings using $EDITOR"},
+		{2, "alerts", "Edit alert configs using $EDITOR"},
+		{0, "", ""},
+		{0, "Administrative Actions:", ""},
+		{2, "validate", "Validate configuration syntax and alert strategies"},
+		{2, "config <file>", "Use YAML configuration file"},
+		{0, "", ""},
+		{0, "Examples:", ""},
+		{2, fmt.Sprintf("%s targets", os.Args[0]), ""},
+		{2, fmt.Sprintf("%s add https://api.example.com/health --threshold 30s", os.Args[0]), ""},
+		{2, fmt.Sprintf("%s rm https://api.example.com/health", os.Args[0]), ""},
+		{2, fmt.Sprintf("%s list", os.Args[0]), ""},
+		{2, fmt.Sprintf("%s config", os.Args[0]), ""},
+		{2, fmt.Sprintf("%s server --webhook-port 8080", os.Args[0]), ""},
+	}
+	for _, line := range display(lines, 20) {
+		// The display helper prefixes lines with "# " for YAML comments; strip for CLI help
+		line = strings.TrimPrefix(line, "# ")
+		fmt.Println(line)
+	}
 }
 
 // handleEditCommand handles the edit action
 func handleEditCommand(args []string) {
 	stateFile := getStateFile(args)
 	// Support reading from stdin
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			sm := NewStateManager(stateFile)
-			if err := sm.Load(); err != nil {
-				log.Printf("Warning: Could not load existing state: %v", err)
-			}
-			applyTargetsYAML(sm, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		sm := NewStateManager(stateFile)
+		if err := sm.Load(); err != nil {
+			log.Printf("Warning: Could not load existing state: %v", err)
+		}
+		applyTargetsYAML(sm, data)
+		return
+	} else {
+		handleEditTargets(stateFile)
 	}
-	handleEditTargets(stateFile)
 }
 
 // handleAddCommand handles the add action
@@ -244,7 +255,7 @@ func handleConfigMode(configFile string, webhookPort int, webhookPath string) {
 	// Start webhook server if requested
 	var webhookServer *WebhookServer
 	if webhookPort > 0 {
-		webhookServer = NewWebhookServer(webhookPort, webhookPath, engine)
+		webhookServer = NewWebhookServer(webhookPort, webhookPath, engine, nil)
 		if err := webhookServer.Start(ctx); err != nil {
 			log.Fatal(err)
 		}
@@ -340,105 +351,6 @@ type TargetFields struct {
 	SizeAlerts    bool
 	CheckStrategy bool
 	Alerts        bool
-}
-
-// cleanAllDefaults removes all default values from target configuration (for temp file creation)
-func cleanAllDefaults(target *Target) {
-	appliedDefaults := []string{}
-
-	// Check and clean method
-	if target.Method == "GET" {
-		target.Method = ""
-		appliedDefaults = append(appliedDefaults, "method: GET")
-	}
-
-	// Check and clean headers
-	if len(target.Headers) == 0 {
-		target.Headers = nil
-		appliedDefaults = append(appliedDefaults, "headers: {}")
-	}
-
-	// Check and clean threshold
-	if target.Threshold == 30 {
-		target.Threshold = 0
-		appliedDefaults = append(appliedDefaults, "threshold: 30s")
-	}
-
-	// Check and clean status codes
-	if len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
-		target.StatusCodes = nil
-		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
-	}
-
-	// Check and clean size alerts
-	if target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
-		target.SizeAlerts = SizeAlertConfig{}
-		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
-	}
-
-	// Check and clean check strategy
-	if target.CheckStrategy == "http" {
-		target.CheckStrategy = ""
-		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Show INFO message if any defaults were applied
-	if len(appliedDefaults) > 0 {
-		fmt.Printf("%s Applied defaults for %s: %s\n",
-			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			target.Name,
-			strings.Join(appliedDefaults, ", "))
-	}
-}
-
-// cleanDefaults removes default values from target configuration and shows INFO messages
-// It only cleans fields that were explicitly set to default values
-func cleanDefaults(target *Target, fields *TargetFields) {
-	appliedDefaults := []string{}
-
-	// Check and clean method (only if it was explicitly set)
-	if fields.Method && target.Method == "GET" {
-		target.Method = ""
-		appliedDefaults = append(appliedDefaults, "method: GET")
-	}
-
-	// Check and clean headers (only if it was explicitly set)
-	if fields.Headers && len(target.Headers) == 0 {
-		target.Headers = nil
-		appliedDefaults = append(appliedDefaults, "headers: {}")
-	}
-
-	// Check and clean threshold (only if it was explicitly set)
-	if fields.Threshold && target.Threshold == 30 {
-		target.Threshold = 0
-		appliedDefaults = append(appliedDefaults, "threshold: 30s")
-	}
-
-	// Check and clean status codes (only if it was explicitly set)
-	if fields.StatusCodes && len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
-		target.StatusCodes = nil
-		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
-	}
-
-	// Check and clean size alerts (only if it was explicitly set)
-	if fields.SizeAlerts && target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
-		target.SizeAlerts = SizeAlertConfig{}
-		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
-	}
-
-	// Check and clean check strategy (only if it was explicitly set)
-	if fields.CheckStrategy && target.CheckStrategy == "http" {
-		target.CheckStrategy = ""
-		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Show INFO message if any defaults were applied
-	if len(appliedDefaults) > 0 {
-		fmt.Printf("%s Applied defaults for %s: %s\n",
-			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			target.Name,
-			strings.Join(appliedDefaults, ", "))
-	}
 }
 
 // applyDefaultsAfterClean applies default values after cleaning
@@ -646,33 +558,94 @@ func handleListTargets(stateFile string) {
 		log.Printf("Warning: Could not load existing state: %v", err)
 	}
 
+	// Targets summary
 	targets := stateManager.ListTargets()
-
-	if len(targets) == 0 {
-		fmt.Printf("%s No targets configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
-		return
-	}
-
 	fmt.Printf("%s Configured Targets (%d):\n", qc.Colorize("📋 Info:", qc.ColorBlue), len(targets))
 	fmt.Println()
+	if len(targets) == 0 {
+		fmt.Printf("%s No targets configured\n\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+	} else {
+		i := 0
+		for _, target := range targets {
+			// Alternate row colors for better readability
+			rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
 
+			entry := fmt.Sprintf(
+				"%3d. %-30s %s",
+				i+1, target.Name, target.URL,
+			)
+			fmt.Println(qc.Colorize(entry, rowColor))
+			// Display alert strategies (multiple supported)
+			alerts := strings.Join(target.Alerts, ", ")
+			if alerts == "" && target.AlertStrategy != "" {
+				alerts = target.AlertStrategy
+			}
+			fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
+				target.Method, target.Threshold, target.CheckStrategy, alerts)
+			i++
+		}
+		fmt.Println()
+	}
+
+	// Alerts summary
+	notifiers := stateManager.GetAlerts()
+	fmt.Printf("%s Configured Alerts (%d):\n", qc.Colorize("📋 Info:", qc.ColorBlue), len(notifiers))
+	fmt.Println()
+	if len(notifiers) == 0 {
+		fmt.Printf("%s No alerts configured\n\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+	} else {
+		i := 0
+		for name, alert := range notifiers {
+			rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
+			status := "enabled"
+			if !alert.Enabled {
+				status = "disabled"
+			}
+			entry := fmt.Sprintf(
+				"%3d. %-20s %s (%s)",
+				i+1, name, alert.Type, status,
+			)
+			fmt.Println(qc.Colorize(entry, rowColor))
+			if alert.Description != "" {
+				fmt.Printf("     Description: %s\n", alert.Description)
+			}
+			if len(alert.Settings) > 0 {
+				fmt.Printf("     Settings: %d configured\n", len(alert.Settings))
+			}
+			i++
+		}
+		fmt.Println()
+	}
+
+	// Hooks summary
+	hooks := stateManager.ListHooks()
+	fmt.Printf("%s Configured Hooks (%d):\n", qc.Colorize("📋 Info:", qc.ColorBlue), len(hooks))
+	fmt.Println()
+	if len(hooks) == 0 {
+		fmt.Printf("%s No hooks configured\n", qc.Colorize("ℹ️ Info:", qc.ColorYellow))
+		return
+	}
 	i := 0
-	for _, target := range targets {
-		// Alternate row colors for better readability
+	for name, h := range hooks {
 		rowColor := qc.AlternatingColor(i, qc.ColorWhite, qc.ColorCyan)
-
+		route := "/hooks/" + name
+		methods := strings.Join(h.Methods, ", ")
+		if methods == "" {
+			methods = "POST"
+		}
+		alerts := strings.Join(h.Alerts, ", ")
+		if alerts == "" {
+			alerts = "console"
+		}
 		entry := fmt.Sprintf(
-			"%3d. %-30s %s",
-			i+1, target.Name, target.URL,
+			"%3d. %-20s %s",
+			i+1, name, route,
 		)
 		fmt.Println(qc.Colorize(entry, rowColor))
-		// Display alert strategies (multiple supported)
-		alerts := strings.Join(target.Alerts, ", ")
-		if alerts == "" && target.AlertStrategy != "" {
-			alerts = target.AlertStrategy
+		if strings.TrimSpace(h.Message) != "" {
+			fmt.Printf("     Message: %s\n", h.Message)
 		}
-		fmt.Printf("     Method: %s, Threshold: %ds, Check: %s, Alert: %s\n",
-			target.Method, target.Threshold, target.CheckStrategy, alerts)
+		fmt.Printf("     Methods: %s, Alerts: %s\n", methods, alerts)
 		i++
 	}
 }
@@ -719,16 +692,14 @@ func handleSettingsCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			applySettingsYAML(stateManager, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		applySettingsYAML(stateManager, data)
+		return
 	}
 	// Edit settings
 	editSettings(stateManager)
@@ -776,16 +747,14 @@ func handleNotifiersCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			applyAlertsYAML(stateManager, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		applyAlertsYAML(stateManager, data)
+		return
 	}
 	// Edit alerts
 	editAlerts(stateManager)
