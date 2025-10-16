@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	qc "github.com/bevelwork/quick_color"
@@ -375,8 +376,25 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 		return "", err
 	}
 
-	// Add helpful comments tailored to simplified format
-	commentedData := addEditCommentsForSimplified(data)
+	// Build list of available alert names for comments: enabled alerts + default 'console' if not already present
+	availableAlerts := []string{}
+	hasConsole := false
+	for name, alert := range stateManager.GetAlerts() {
+		if alert.Enabled {
+			availableAlerts = append(availableAlerts, name)
+			if name == "console" {
+				hasConsole = true
+			}
+		}
+	}
+	// Add default console if not already present
+	if !hasConsole {
+		availableAlerts = append(availableAlerts, "console")
+	}
+	sort.Strings(availableAlerts)
+
+	// Add helpful comments tailored to simplified format (including available alerts)
+	commentedData := addEditCommentsForSimplified(data, availableAlerts)
 
 	// Write to temp file
 	if _, err := tempFile.Write(commentedData); err != nil {
@@ -393,11 +411,11 @@ func addEditComments(data []byte) []byte {
 		"# To remove a target: delete its entry",
 		"# To modify a target: edit its properties",
 		"# To add a target: add an object to the list.",
-		"# Required fields: name, url",
-		"# Alert alerts: console, slack",
+		"# __Required fields__: name, url",
+		"# Alert alerts: [console, slack]",
 		"#",
 		"# Full example with all options:",
-		"#   comprehensive-example:",
+		"#   my-full-config:",
 		"#     name: \"Comprehensive Target\"",
 		"#     url: \"https://api.example.com/health\"",
 		"#     method: \"GET\"                    # HTTP method (default: GET)",
@@ -410,8 +428,8 @@ func addEditComments(data []byte) []byte {
 		"#       enabled: true",
 		"#       history_size: 100",
 		"#       threshold: 0.5",
-		"#     check_strategy: \"http\"           # Check strategy (default: http)",
-		"#     alerts: \"console\"        # Alert strategy (default: console)",
+		"#     check_strategy: \"http\"    # Check strategy",
+		"#     alerts: [\"console\"        # Alert strategy",
 		"",
 	}
 
@@ -420,8 +438,12 @@ func addEditComments(data []byte) []byte {
 }
 
 // addEditCommentsForSimplified adds comments for the simplified targets editor
-func addEditCommentsForSimplified(data []byte) []byte {
+func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte {
 	lines := strings.Split(string(data), "\n")
+	alertsComment := "#   alerts: [console]"
+	if len(availableAlerts) > 0 {
+		alertsComment = "#   alerts: [console]          # [" + strings.Join(availableAlerts, "|") + "]"
+	}
 	commentedLines := []string{
 		"# Edit targets below. Each key is the target name.",
 		"# Only 'url' is required. Other fields are optional and have defaults.",
@@ -439,7 +461,7 @@ func addEditCommentsForSimplified(data []byte) []byte {
 		"#     history_size: 100",
 		"#     threshold: 0.5                     # 50% change",
 		"#   check_strategy: http                 # default: http",
-		"#   alerts: [console]          # preferred (supports multiple)",
+		alertsComment,
 		"",
 	}
 	commentedLines = append(commentedLines, lines...)
@@ -934,7 +956,7 @@ func addAlertsComments(data []byte) []byte {
 		"# For slack, 'type: slack' and 'settings.webhook_url' are required.",
 		"#",
 		"# Full examples:",
-		"# console:",
+		"# my-console-alert:",
 		"#   type: console",
 		"#   enabled: true",
 		"#   description: \"Console output\"",
@@ -942,7 +964,7 @@ func addAlertsComments(data []byte) []byte {
 		"#     style: stylized",
 		"#     color: true",
 		"#",
-		"# slack:",
+		"# my-slack-alert:",
 		"#   type: slack",
 		"#   enabled: true",
 		"#   description: \"Slack alerts channel\"",
