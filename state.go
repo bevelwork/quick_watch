@@ -32,10 +32,11 @@ type WatchState struct {
 type ServerSettings struct {
 	WebhookPort             int           `yaml:"webhook_port"`
 	WebhookPath             string        `yaml:"webhook_path"`
-	CheckInterval           int           `yaml:"check_interval"`            // seconds (default: 5s)
-	DefaultThreshold        int           `yaml:"default_threshold"`         // seconds (default: 30s)
-	Startup                 StartupConfig `yaml:"startup"`                   // startup message configuration
-	AcknowledgementsEnabled bool          `yaml:"acknowledgements_enabled"`  // enable alert acknowledgements
+	ServerAddress           string        `yaml:"server_address,omitempty"` // public-facing server address for URLs (e.g., "https://monitor.example.com:8080")
+	CheckInterval           int           `yaml:"check_interval"`           // seconds (default: 5s)
+	DefaultThreshold        int           `yaml:"default_threshold"`        // seconds (default: 30s)
+	Startup                 StartupConfig `yaml:"startup"`                  // startup message configuration
+	AcknowledgementsEnabled bool          `yaml:"acknowledgements_enabled"` // enable alert acknowledgements
 }
 
 // StartupConfig represents startup message configuration

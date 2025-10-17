@@ -45,9 +45,10 @@ func (w *WebhookServer) Start(ctx context.Context) error {
 	}
 
 	log.Printf("Starting webhook server on port %d", w.port)
-	log.Printf("Webhook endpoint: http://0.0.0.0:%d%s", w.port, w.path)
-	log.Printf("Health check: http://0.0.0.0:%d/health", w.port)
-	log.Printf("Status: http://0.0.0.0:%d/status", w.port)
+	localAddr := fmt.Sprintf("http://localhost:%d", w.port)
+	log.Printf("Webhook endpoint: %s%s", localAddr, w.path)
+	log.Printf("Health check: %s/health", localAddr)
+	log.Printf("Status: %s/status", localAddr)
 
 	// Start server in goroutine
 	go func() {

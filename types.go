@@ -112,31 +112,35 @@ type WebhookNotification struct {
 
 // TargetState represents the current state of a target
 type TargetState struct {
-	Target               *Target
-	IsDown               bool
-	DownSince            *time.Time
-	LastCheck            *CheckResult
-	CheckStrategy        CheckStrategy
-	AlertStrategies      []AlertStrategy
-	SizeHistory          []int64 // Track response sizes for change detection
-	CurrentAckToken      string  // Current acknowledgement token for active alert
-	AcknowledgedBy       string  // Who acknowledged (from request metadata)
-	AcknowledgedAt       *time.Time
-	AcknowledgementNote  string     // Optional note from acknowledger
-	RecoveryTimer        *time.Timer // Timer for auto-recovery (webhook targets with duration)
-	RecoveryTime         *time.Time  // When auto-recovery is scheduled
+	Target                 *Target
+	IsDown                 bool
+	DownSince              *time.Time
+	LastCheck              *CheckResult
+	CheckStrategy          CheckStrategy
+	AlertStrategies        []AlertStrategy
+	SizeHistory            []int64 // Track response sizes for change detection
+	CurrentAckToken        string  // Current acknowledgement token for active alert
+	AcknowledgedBy         string  // Who acknowledged (from request metadata)
+	AcknowledgedAt         *time.Time
+	AcknowledgementNote    string      // Optional note from acknowledger
+	AcknowledgementContact string      // Contact information (Slack, Zoom, phone, etc.)
+	RecoveryTimer          *time.Timer // Timer for auto-recovery (webhook targets with duration)
+	RecoveryTime           *time.Time  // When auto-recovery is scheduled
+	FailureCount           int         // Number of consecutive failures
+	LastAlertTime          *time.Time  // Time of the last alert sent
 }
 
 // TargetEngine represents the core targeting engine
 // HookState tracks the state of a hook acknowledgement
 type HookState struct {
-	HookName        string
-	Message         string
-	TriggeredAt     time.Time
-	AckToken        string
-	AcknowledgedAt  *time.Time
-	AcknowledgedBy  string
-	AcknowledgementNote string
+	HookName               string
+	Message                string
+	TriggeredAt            time.Time
+	AckToken               string
+	AcknowledgedAt         *time.Time
+	AcknowledgedBy         string
+	AcknowledgementNote    string
+	AcknowledgementContact string
 }
 
 type TargetEngine struct {
@@ -382,17 +386,22 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 	state.IsDown = !result.Success
 
 	if !result.Success && !wasDown {
-		// Just went down
+		// Just went down - send initial alert
 		now := time.Now()
 		state.DownSince = &now
-		
+		state.FailureCount = 1
+		state.LastAlertTime = &now
+
+		// Set alert count in result for display
+		result.AlertCount = state.FailureCount
+
 		// Generate acknowledgement token if enabled and not already acknowledged
 		var ackURL string
 		if e.acksEnabled && state.AcknowledgedAt == nil {
 			token := e.GenerateAckToken(state)
 			ackURL = e.GetAcknowledgementURL(token)
 		}
-		
+
 		for _, strat := range state.AlertStrategies {
 			if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
 				ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
@@ -401,22 +410,36 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 			}
 		}
 	} else if result.Success && wasDown {
-		// Just came back up - clear acknowledgement
+		// Just came back up - clear acknowledgement and reset counters
 		e.ClearAcknowledgement(state)
 		state.DownSince = nil
+		state.FailureCount = 0
+		state.LastAlertTime = nil
 		for _, strat := range state.AlertStrategies {
 			strat.SendAllClear(ctx, state.Target, result)
 		}
 	} else if !result.Success && wasDown {
-		// Still down - check if we should send another alert
-		if state.DownSince != nil {
-			downDuration := time.Since(*state.DownSince)
-			threshold := time.Duration(state.Target.Threshold) * time.Second
-			if downDuration >= threshold {
-				// Send another alert if we've been down for the threshold
-				// Include acknowledgement URL if not yet acknowledged
+		// Still down - check if we should send another alert (only if not acknowledged)
+		if state.AcknowledgedAt == nil {
+			// Calculate exponential backoff based on how many alerts we've already sent
+			// Formula: 5 * 2^(FailureCount-1) seconds
+			// FailureCount=1 -> 5s, FailureCount=2 -> 10s, FailureCount=3 -> 20s, etc.
+			backoffSeconds := 5 * (1 << uint(state.FailureCount-1))
+			backoffDuration := time.Duration(backoffSeconds) * time.Second
+
+			// Check if enough time has passed since last alert
+			if state.LastAlertTime != nil && time.Since(*state.LastAlertTime) >= backoffDuration {
+				// Time to send another alert
+				now := time.Now()
+				state.LastAlertTime = &now
+				state.FailureCount++ // Increment only when we actually send an alert
+
+				// Set alert count in result for display
+				result.AlertCount = state.FailureCount
+
+				// Generate or reuse acknowledgement token
 				var ackURL string
-				if e.acksEnabled && state.AcknowledgedAt == nil {
+				if e.acksEnabled {
 					if state.CurrentAckToken == "" {
 						token := e.GenerateAckToken(state)
 						ackURL = e.GetAcknowledgementURL(token)
@@ -424,7 +447,7 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 						ackURL = e.GetAcknowledgementURL(state.CurrentAckToken)
 					}
 				}
-				
+
 				for _, strat := range state.AlertStrategies {
 					if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
 						ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
@@ -434,6 +457,7 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 				}
 			}
 		}
+		// If acknowledged, don't send any more alerts until service recovers
 	}
 }
 
@@ -471,36 +495,47 @@ func (e *TargetEngine) GetAcknowledgementURL(token string) string {
 func (e *TargetEngine) GenerateAckToken(state *TargetState) string {
 	e.ackMutex.Lock()
 	defer e.ackMutex.Unlock()
-	
+
 	// Generate a simple token based on target URL and timestamp
 	token := fmt.Sprintf("%x", time.Now().UnixNano())
-	
+
 	// Store the mapping
 	e.ackTokenMap[token] = state
 	state.CurrentAckToken = token
-	
+
 	return token
 }
 
 // AcknowledgeAlert acknowledges an alert by token
-func (e *TargetEngine) AcknowledgeAlert(token, acknowledgedBy, note string) (*TargetState, error) {
+func (e *TargetEngine) AcknowledgeAlert(token, acknowledgedBy, note, contact string) (*TargetState, error) {
 	e.ackMutex.Lock()
 	defer e.ackMutex.Unlock()
-	
+
 	state, exists := e.ackTokenMap[token]
 	if !exists {
 		return nil, fmt.Errorf("invalid or expired acknowledgement token")
 	}
-	
-	// Mark as acknowledged
+
+	// Mark as acknowledged (or update existing acknowledgement)
 	now := time.Now()
-	state.AcknowledgedAt = &now
-	state.AcknowledgedBy = acknowledgedBy
-	state.AcknowledgementNote = note
-	
+	if state.AcknowledgedAt == nil {
+		state.AcknowledgedAt = &now
+	}
+
+	// Update fields (allow updates to acknowledgement info)
+	if acknowledgedBy != "" {
+		state.AcknowledgedBy = acknowledgedBy
+	}
+	if note != "" {
+		state.AcknowledgementNote = note
+	}
+	if contact != "" {
+		state.AcknowledgementContact = contact
+	}
+
 	// Keep token in map so we can detect duplicate acknowledgements
 	// Token will be cleared when alert is resolved
-	
+
 	return state, nil
 }
 
@@ -508,17 +543,18 @@ func (e *TargetEngine) AcknowledgeAlert(token, acknowledgedBy, note string) (*Ta
 func (e *TargetEngine) ClearAcknowledgement(state *TargetState) {
 	e.ackMutex.Lock()
 	defer e.ackMutex.Unlock()
-	
+
 	// Remove token from map if it exists
 	if state.CurrentAckToken != "" {
 		delete(e.ackTokenMap, state.CurrentAckToken)
 		state.CurrentAckToken = ""
 	}
-	
+
 	// Clear acknowledgement info
 	state.AcknowledgedAt = nil
 	state.AcknowledgedBy = ""
 	state.AcknowledgementNote = ""
+	state.AcknowledgementContact = ""
 }
 
 // TriggerWebhookTarget triggers a webhook target to go "down" and optionally auto-recover
@@ -531,28 +567,30 @@ func (e *TargetEngine) TriggerWebhookTarget(targetName string, message string, d
 			break
 		}
 	}
-	
+
 	if state == nil {
 		return nil, fmt.Errorf("target not found: %s", targetName)
 	}
-	
+
 	// Verify it's a webhook target
 	if state.Target.CheckStrategy != "webhook" {
 		return nil, fmt.Errorf("target %s is not a webhook target (check_strategy must be 'webhook')", targetName)
 	}
-	
+
 	// Cancel any existing recovery timer
 	if state.RecoveryTimer != nil {
 		state.RecoveryTimer.Stop()
 		state.RecoveryTimer = nil
 		state.RecoveryTime = nil
 	}
-	
+
 	// Mark as down
 	now := time.Now()
 	state.IsDown = true
 	state.DownSince = &now
-	
+	state.FailureCount = 1
+	state.LastAlertTime = &now
+
 	// Create check result for the triggered alert
 	state.LastCheck = &CheckResult{
 		Success:      false,
@@ -560,23 +598,23 @@ func (e *TargetEngine) TriggerWebhookTarget(targetName string, message string, d
 		ResponseTime: 0,
 		Timestamp:    now,
 	}
-	
+
 	// Use duration from trigger, or fall back to target's duration
 	actualDuration := duration
 	if actualDuration == 0 && state.Target.Duration > 0 {
 		actualDuration = state.Target.Duration
 	}
-	
+
 	// Set up auto-recovery if duration is specified
 	if actualDuration > 0 {
 		recoveryTime := now.Add(time.Duration(actualDuration) * time.Second)
 		state.RecoveryTime = &recoveryTime
-		
+
 		state.RecoveryTimer = time.AfterFunc(time.Duration(actualDuration)*time.Second, func() {
 			e.RecoverWebhookTarget(state)
 		})
 	}
-	
+
 	// Generate acknowledgement token if enabled and not already acknowledged
 	ctx := context.Background()
 	var ackURL string
@@ -584,7 +622,7 @@ func (e *TargetEngine) TriggerWebhookTarget(targetName string, message string, d
 		token := e.GenerateAckToken(state)
 		ackURL = e.GetAcknowledgementURL(token)
 	}
-	
+
 	// Send alerts
 	for _, strat := range state.AlertStrategies {
 		if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
@@ -593,7 +631,7 @@ func (e *TargetEngine) TriggerWebhookTarget(targetName string, message string, d
 			strat.SendAlert(ctx, state.Target, state.LastCheck)
 		}
 	}
-	
+
 	return state, nil
 }
 
@@ -602,16 +640,18 @@ func (e *TargetEngine) RecoverWebhookTarget(state *TargetState) {
 	if !state.IsDown {
 		return
 	}
-	
+
 	// Clear acknowledgement
 	e.ClearAcknowledgement(state)
-	
+
 	// Mark as up
 	state.IsDown = false
 	state.DownSince = nil
 	state.RecoveryTimer = nil
 	state.RecoveryTime = nil
-	
+	state.FailureCount = 0
+	state.LastAlertTime = nil
+
 	// Create recovery check result
 	state.LastCheck = &CheckResult{
 		Success:      true,
@@ -619,7 +659,7 @@ func (e *TargetEngine) RecoverWebhookTarget(state *TargetState) {
 		ResponseTime: 0,
 		Timestamp:    time.Now(),
 	}
-	
+
 	// Send all-clear notifications
 	ctx := context.Background()
 	for _, strat := range state.AlertStrategies {

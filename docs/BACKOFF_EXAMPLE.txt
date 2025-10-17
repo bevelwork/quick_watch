@@ -1,0 +1,100 @@
+Exponential Backoff Alert Timeline Example
+===========================================
+
+Scenario: A service goes down and stays down for 15 minutes, then recovers
+
+Timeline:
+---------
+
+00:00:00  🔴 Service goes DOWN
+          📢 ALERT #1 sent immediately (FailureCount=1)
+          
+00:00:05  🔴 Still down (check runs every 5s)
+          ⏳ Wait... backoff = 5s, time since last alert = 5s
+          📢 ALERT #2 sent (FailureCount=2)
+          
+00:00:10  🔴 Still down
+          ⏳ Wait... backoff = 10s, time since last alert = 5s (not enough time)
+          ⛔ NO ALERT
+          
+00:00:15  🔴 Still down
+          ⏳ Wait... backoff = 10s, time since last alert = 10s
+          📢 ALERT #3 sent (FailureCount=3)
+          
+00:00:20  🔴 Still down
+00:00:25  🔴 Still down
+00:00:30  🔴 Still down
+          ⏳ Wait... backoff = 20s, time since last alert = 15s (not enough time)
+          ⛔ NO ALERT
+          
+00:00:35  🔴 Still down
+          ⏳ Wait... backoff = 20s, time since last alert = 20s
+          📢 ALERT #4 sent (FailureCount=4)
+          
+00:00:40  🔴 Still down
+00:00:45  🔴 Still down
+00:00:50  🔴 Still down
+00:00:55  🔴 Still down
+00:01:00  🔴 Still down
+          ⏳ Wait... backoff = 40s, time since last alert = 25s (not enough time)
+          ⛔ NO ALERT
+          
+00:01:15  🔴 Still down
+          ⏳ Wait... backoff = 40s, time since last alert = 40s
+          📢 ALERT #5 sent (FailureCount=5)
+          
+00:01:30  🔴 Still down
+          ⏰ USER ACKNOWLEDGES ALERT
+          ✅ Acknowledgement recorded - alerts will now STOP
+          
+00:02:00  🔴 Still down
+          ⏳ Backoff would be 80s, but ACKNOWLEDGED
+          ⛔ NO ALERT (acknowledged)
+          
+00:03:00  🔴 Still down
+          ⛔ NO ALERT (acknowledged)
+          
+00:05:00  🔴 Still down
+          ⛔ NO ALERT (acknowledged)
+          
+00:10:00  🔴 Still down
+          ⛔ NO ALERT (acknowledged)
+          
+00:15:00  🟢 Service comes UP
+          🎉 ALL CLEAR notification sent
+          🔄 Reset: FailureCount=0, LastAlertTime=nil, AcknowledgedAt=nil
+          
+00:20:00  🔴 Service goes DOWN again
+          📢 ALERT #1 sent immediately (NEW INCIDENT, FailureCount=1)
+
+
+Summary of Alerts Sent:
+------------------------
+Without exponential backoff:
+  - 180 alerts in 15 minutes (every 5 seconds)
+  - Even after acknowledgement: continues!
+
+With exponential backoff + acknowledgement:
+  - 5 alerts before acknowledgement
+  - 0 alerts after acknowledgement
+  - Total: 5 alerts (97% reduction!)
+
+
+Backoff Progression:
+--------------------
+Failure #  | Backoff Time | Formula              | Total Alerts | Total Time
+-----------|--------------|----------------------|--------------|-------------
+1          | 0s           | 5 * 2^0 = 5          | 1            | 0s
+2          | 5s           | 5 * 2^1 = 10         | 2            | 5s
+3          | 10s          | 5 * 2^2 = 20         | 3            | 15s
+4          | 20s          | 5 * 2^3 = 40         | 4            | 35s
+5          | 40s          | 5 * 2^4 = 80         | 5            | 1m 15s
+6          | 80s          | 5 * 2^5 = 160        | 6            | 2m 35s
+7          | 160s         | 5 * 2^6 = 320        | 7            | 5m 15s
+8          | 320s         | 5 * 2^7 = 640        | 8            | 10m 35s
+9          | 640s         | 5 * 2^8 = 1280       | 9            | 21m 15s
+10         | 1280s        | 5 * 2^9 = 2560       | 10           | 42m 35s
+
+Note: In practice, most incidents are acknowledged within the first few alerts,
+      drastically reducing notification volume while maintaining quick response.
+

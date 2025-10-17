@@ -728,6 +728,9 @@ func editSettings(stateManager *StateManager) {
 	if webhookPath, ok := settingsData["webhook_path"].(string); ok {
 		settings.WebhookPath = webhookPath
 	}
+	if serverAddress, ok := settingsData["server_address"].(string); ok {
+		settings.ServerAddress = serverAddress
+	}
 	if checkInterval, ok := settingsData["check_interval"].(int); ok {
 		settings.CheckInterval = checkInterval
 	}
@@ -804,6 +807,7 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 	settingsOnly := map[string]interface{}{
 		"webhook_port":             settings.WebhookPort,
 		"webhook_path":             settings.WebhookPath,
+		"server_address":           settings.ServerAddress,
 		"check_interval":           settings.CheckInterval,
 		"default_threshold":        settings.DefaultThreshold,
 		"acknowledgements_enabled": settings.AcknowledgementsEnabled,
@@ -840,8 +844,10 @@ func addSettingsComments(data []byte) []byte {
 		{0, "", ""},
 		{0, "webhook_port: Port for webhook server", "(default: 8080)"},
 		{0, "webhook_path: Path for webhook endpoint", "(default: /webhook)"},
+		{0, "server_address: Public server URL for alert links", "(e.g., https://monitor.example.com:8080)"},
 		{0, "check_interval: How often to check targets in seconds", "(default: 5s)"},
 		{0, "default_threshold: Default down threshold in seconds", "(default: 30s)"},
+		{0, "acknowledgements_enabled: Enable alert acknowledgements", "(default: false)"},
 		{0, "startup:", ""},
 		{2, "enabled: true/false", "(default: true)"},
 		{2, "alerts: [\"console\", \"slack-alerts\"]", "(default: [\"console\"])"},
@@ -1247,6 +1253,9 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 	if v, ok := settingsData["webhook_path"].(string); ok {
 		settings.WebhookPath = v
 	}
+	if v, ok := settingsData["server_address"].(string); ok {
+		settings.ServerAddress = v
+	}
 	if v, ok := settingsData["check_interval"].(int); ok {
 		settings.CheckInterval = v
 	}
@@ -1312,8 +1321,16 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 	fmt.Println()
 	fmt.Printf("  %s Webhook Port: %d\n", qc.Colorize("-", qc.ColorYellow), settings.WebhookPort)
 	fmt.Printf("  %s Webhook Path: %s\n", qc.Colorize("-", qc.ColorYellow), settings.WebhookPath)
+	if settings.ServerAddress != "" {
+		fmt.Printf("  %s Server Address: %s\n", qc.Colorize("-", qc.ColorYellow), settings.ServerAddress)
+	}
 	fmt.Printf("  %s Check Interval: %ds\n", qc.Colorize("-", qc.ColorYellow), settings.CheckInterval)
 	fmt.Printf("  %s Default Threshold: %ds\n", qc.Colorize("-", qc.ColorYellow), settings.DefaultThreshold)
+	acksStatus := "disabled"
+	if settings.AcknowledgementsEnabled {
+		acksStatus = "enabled"
+	}
+	fmt.Printf("  %s Acknowledgements: %s\n", qc.Colorize("-", qc.ColorYellow), acksStatus)
 
 	// Startup summary
 	startupStatus := "disabled"

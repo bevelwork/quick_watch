@@ -30,6 +30,7 @@ type CheckResult struct {
 	ResponseSize int64         `json:"response_size,omitempty"`
 	Error        string        `json:"error,omitempty"`
 	Timestamp    time.Time     `json:"timestamp"`
+	AlertCount   int           `json:"alert_count,omitempty"` // Number of alerts sent for this incident (for exponential backoff display)
 }
 
 // CheckStrategy defines the interface for health check strategies
@@ -49,7 +50,7 @@ type AlertStrategy interface {
 type AcknowledgementAwareAlert interface {
 	AlertStrategy
 	SendAlertWithAck(ctx context.Context, target *Target, result *CheckResult, ackURL string) error
-	SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note string) error
+	SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error
 }
 
 // NotificationStrategy defines the interface for handling incoming notifications
@@ -62,7 +63,7 @@ type NotificationStrategy interface {
 type AcknowledgementAwareNotification interface {
 	NotificationStrategy
 	HandleNotificationWithAck(ctx context.Context, notification *WebhookNotification, ackURL string) error
-	SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note string) error
+	SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error
 }
 
 // HTTPCheckStrategy implements HTTP health checks
@@ -357,6 +358,54 @@ func (c *ConsoleAlertStrategy) SendStartupMessage(version string, targetCount in
 	fmt.Printf("%s started - Version: %s, Targets: %s\n", title, v, t)
 }
 
+// SendAlertWithAck sends an alert to the console with acknowledgement URL
+func (c *ConsoleAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target, result *CheckResult, ackURL string) error {
+	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
+	title := c.format("🚨 ALERT:", qc.ColorRed, true)
+	name := c.format(target.Name, qc.ColorRed, true)
+
+	// Build alert message with count
+	alertMsg := fmt.Sprintf("%s %s is DOWN - %s (Status: %d, Time: %v)",
+		title, name, target.URL, result.StatusCode, result.ResponseTime)
+	if result.AlertCount > 1 {
+		alertMsg += fmt.Sprintf(" %s", c.format(fmt.Sprintf("[Alert #%d]", result.AlertCount), qc.ColorYellow, false))
+	}
+	fmt.Println(alertMsg)
+
+	fmt.Printf("   %s %s\n", c.format("Target:", qc.ColorCyan, true), target.Name)
+	fmt.Printf("   %s %s\n", c.format("URL:", qc.ColorCyan, true), target.URL)
+	fmt.Printf("   %s %s\n", c.format("Time:", qc.ColorCyan, true), timestamp)
+	fmt.Printf("   %s %v\n", c.format("Response Time:", qc.ColorCyan, true), result.ResponseTime)
+	if result.AlertCount > 0 {
+		fmt.Printf("   %s %d\n", c.format("Alert Count:", qc.ColorCyan, true), result.AlertCount)
+	}
+	if result.ResponseSize > 0 {
+		fmt.Printf("   %s %d bytes\n", c.format("Response Size:", qc.ColorCyan, true), result.ResponseSize)
+	}
+	fmt.Printf("   %s %s\n", c.format("Acknowledge:", qc.ColorYellow, true), ackURL)
+	fmt.Println()
+	return nil
+}
+
+// SendAcknowledgement sends acknowledgement notification to the console
+func (c *ConsoleAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error {
+	title := c.format("✅ ACKNOWLEDGED:", qc.ColorGreen, true)
+	name := c.format(target.Name, qc.ColorGreen, true)
+	fmt.Printf("%s Alert for %s has been acknowledged\n", title, name)
+	fmt.Printf("   %s %s\n", c.format("Target:", qc.ColorCyan, true), target.Name)
+	fmt.Printf("   %s %s\n", c.format("URL:", qc.ColorCyan, true), target.URL)
+	fmt.Printf("   %s %s\n", c.format("Acknowledged By:", qc.ColorCyan, true), acknowledgedBy)
+	fmt.Printf("   %s %s\n", c.format("Time:", qc.ColorCyan, true), time.Now().Format("2006-01-02 15:04:05 MST"))
+	if contact != "" {
+		fmt.Printf("   %s %s\n", c.format("Contact:", qc.ColorCyan, true), contact)
+	}
+	if note != "" {
+		fmt.Printf("   %s %s\n", c.format("Note:", qc.ColorCyan, true), note)
+	}
+	fmt.Println()
+	return nil
+}
+
 // WebhookAlertStrategy implements webhook-based alerting
 type WebhookAlertStrategy struct {
 	webhookURL string
@@ -636,8 +685,12 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 
 // SendAlertWithAck sends an alert to Slack with acknowledgement button
 func (s *SlackAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target, result *CheckResult, ackURL string) error {
-	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
-		target.Name, target.URL, result.StatusCode, result.ResponseTime, result.Error)
+	title := fmt.Sprintf("🚨 *%s* is DOWN", target.Name)
+	if result.AlertCount > 1 {
+		title = fmt.Sprintf("🚨 *%s* is DOWN [Alert #%d]", target.Name, result.AlertCount)
+	}
+	message := fmt.Sprintf("%s\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
+		title, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
 	payload := map[string]interface{}{
 		"text":   message,
@@ -668,11 +721,16 @@ func (s *SlackAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 						"short": true,
 					},
 					{
+						"title": "Alert Count",
+						"value": fmt.Sprintf("`%d`", result.AlertCount),
+						"short": true,
+					},
+					{
 						"title": "Timestamp",
 						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>",
 							result.Timestamp.Unix(),
 							result.Timestamp.Format("2006-01-02 15:04:05")),
-						"short": false,
+						"short": true,
 					},
 					{
 						"title": "Acknowledge",
@@ -688,8 +746,11 @@ func (s *SlackAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 }
 
 // SendAcknowledgement sends acknowledgement notification to Slack
-func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note string) error {
+func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error {
 	message := fmt.Sprintf("✅ Alert acknowledged for *%s*\n• By: %s", target.Name, acknowledgedBy)
+	if contact != "" {
+		message += fmt.Sprintf("\n• Contact: %s", contact)
+	}
 	if note != "" {
 		message += fmt.Sprintf("\n• Note: %s", note)
 	}
@@ -721,7 +782,7 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 						"title": "Time",
 						"value": fmt.Sprintf("<!date^%d^{date} {time}|%s>",
 							time.Now().Unix(),
-							time.Now().Format("2006-01-02 15:04:05")),
+							time.Now().Format("2006-01-02 15:04:05 MST")),
 						"short": true,
 					},
 				},
@@ -729,6 +790,19 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 		},
 	}
 
+	// Add contact info if provided
+	if contact != "" {
+		attachment := payload["attachments"].([]map[string]interface{})[0]
+		fields := attachment["fields"].([]map[string]interface{})
+		fields = append(fields, map[string]interface{}{
+			"title": "Contact",
+			"value": contact,
+			"short": false,
+		})
+		attachment["fields"] = fields
+	}
+
+	// Add note if provided
 	if note != "" {
 		attachment := payload["attachments"].([]map[string]interface{})[0]
 		fields := attachment["fields"].([]map[string]interface{})
@@ -769,6 +843,33 @@ func (c *ConsoleNotificationStrategy) HandleNotification(ctx context.Context, no
 // Name returns the strategy name
 func (c *ConsoleNotificationStrategy) Name() string {
 	return "console"
+}
+
+// HandleNotificationWithAck handles incoming notifications with acknowledgement URL by printing to console
+func (c *ConsoleNotificationStrategy) HandleNotificationWithAck(ctx context.Context, notification *WebhookNotification, ackURL string) error {
+	fmt.Printf("📨 NOTIFICATION: %s\n", notification.Type)
+	fmt.Printf("   Target: %s\n", notification.Target)
+	fmt.Printf("   Message: %s\n", notification.Message)
+	fmt.Printf("   Timestamp: %s\n", notification.Timestamp.Format("2006-01-02 15:04:05"))
+	fmt.Printf("   Acknowledge: %s\n", ackURL)
+	fmt.Println()
+	return nil
+}
+
+// SendNotificationAcknowledgement sends acknowledgement notification to the console
+func (c *ConsoleNotificationStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error {
+	fmt.Printf("✅ ACKNOWLEDGED: Notification for hook '%s' has been acknowledged\n", hookName)
+	fmt.Printf("   Hook: %s\n", hookName)
+	fmt.Printf("   Acknowledged By: %s\n", acknowledgedBy)
+	fmt.Printf("   Time: %s\n", time.Now().Format("2006-01-02 15:04:05 MST"))
+	if contact != "" {
+		fmt.Printf("   Contact: %s\n", contact)
+	}
+	if note != "" {
+		fmt.Printf("   Note: %s\n", note)
+	}
+	fmt.Println()
+	return nil
 }
 
 // SlackNotificationStrategy sends generic notifications to a Slack webhook
@@ -841,7 +942,7 @@ func (s *SlackNotificationStrategy) HandleNotificationWithAck(ctx context.Contex
 		message = fmt.Sprintf("%s — %s", notification.Target, message)
 	}
 	message += "\n\n🔗 <" + ackURL + "|Acknowledge this notification>"
-	
+
 	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
@@ -871,12 +972,15 @@ func (s *SlackNotificationStrategy) HandleNotificationWithAck(ctx context.Contex
 }
 
 // SendNotificationAcknowledgement sends an acknowledgement notification to Slack
-func (s *SlackNotificationStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note string) error {
+func (s *SlackNotificationStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error {
 	message := fmt.Sprintf("✅ *Notification Acknowledged*\nHook: %s\nAcknowledged by: %s", hookName, acknowledgedBy)
+	if contact != "" {
+		message += fmt.Sprintf("\nContact: %s", contact)
+	}
 	if note != "" {
 		message += fmt.Sprintf("\nNote: %s", note)
 	}
-	
+
 	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
@@ -970,8 +1074,12 @@ func (e *EmailNotificationStrategy) HandleNotificationWithAck(ctx context.Contex
 }
 
 // SendNotificationAcknowledgement sends an acknowledgement email
-func (e *EmailNotificationStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note string) error {
+func (e *EmailNotificationStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error {
 	subject := fmt.Sprintf("✅ Notification Acknowledged — %s", hookName)
+	contactSection := ""
+	if contact != "" {
+		contactSection = fmt.Sprintf("<p><strong>Contact:</strong> %s</p>", contact)
+	}
 	noteSection := ""
 	if note != "" {
 		noteSection = fmt.Sprintf("<p><strong>Note:</strong> %s</p>", note)
@@ -982,12 +1090,14 @@ func (e *EmailNotificationStrategy) SendNotificationAcknowledgement(ctx context.
 <p><strong>Hook:</strong> %s</p>
 <p><strong>Acknowledged by:</strong> %s</p>
 %s
+%s
 <p><strong>Timestamp:</strong> %s</p>
 </body></html>`,
 		hookName,
 		acknowledgedBy,
+		contactSection,
 		noteSection,
-		time.Now().Format("2006-01-02 15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05 MST"),
 	)
 	return sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, false)
 }
@@ -1075,6 +1185,9 @@ func (e *EmailAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 // SendAlertWithAck sends a DOWN alert via email with acknowledgement link
 func (e *EmailAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target, result *CheckResult, ackURL string) error {
 	subject := fmt.Sprintf("🚨 %s is DOWN", target.Name)
+	if result.AlertCount > 1 {
+		subject = fmt.Sprintf("🚨 %s is DOWN [Alert #%d]", target.Name, result.AlertCount)
+	}
 	body := fmt.Sprintf(
 		"<html><body>"+
 			"<h2 style=\"color:#c62828\">%s is DOWN</h2>"+
@@ -1082,6 +1195,7 @@ func (e *EmailAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 			"<li><strong>URL:</strong> %s</li>"+
 			"<li><strong>Status:</strong> %d</li>"+
 			"<li><strong>Response Time:</strong> %s</li>"+
+			"<li><strong>Alert Count:</strong> %d</li>"+
 			"<li><strong>Error:</strong> %s</li>"+
 			"<li><strong>Timestamp:</strong> %s</li>"+
 			"</ul>"+
@@ -1092,6 +1206,7 @@ func (e *EmailAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 		target.URL,
 		result.StatusCode,
 		result.ResponseTime.String(),
+		result.AlertCount,
 		result.Error,
 		result.Timestamp.Format("2006-01-02 15:04:05"),
 		ackURL,
@@ -1100,8 +1215,18 @@ func (e *EmailAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 }
 
 // SendAcknowledgement sends acknowledgement notification via email
-func (e *EmailAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note string) error {
+func (e *EmailAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error {
 	subject := fmt.Sprintf("✅ Alert Acknowledged: %s", target.Name)
+
+	contactSection := ""
+	if contact != "" {
+		contactSection = fmt.Sprintf("<li><strong>Contact:</strong> %s</li>", contact)
+	}
+	noteSection := ""
+	if note != "" {
+		noteSection = fmt.Sprintf("<li><strong>Note:</strong> %s</li>", note)
+	}
+
 	body := fmt.Sprintf(
 		"<html><body>"+
 			"<h2 style=\"color:#2e7d32\">Alert Acknowledged</h2>"+
@@ -1111,19 +1236,16 @@ func (e *EmailAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 			"<li><strong>Acknowledged By:</strong> %s</li>"+
 			"<li><strong>Time:</strong> %s</li>"+
 			"%s"+
+			"%s"+
 			"</ul>"+
 			"<p>This alert has been acknowledged and is being investigated.</p>"+
 			"</body></html>",
 		target.Name,
 		target.URL,
 		acknowledgedBy,
-		time.Now().Format("2006-01-02 15:04:05"),
-		func() string {
-			if note != "" {
-				return fmt.Sprintf("<li><strong>Note:</strong> %s</li>", note)
-			}
-			return ""
-		}(),
+		time.Now().Format("2006-01-02 15:04:05 MST"),
+		contactSection,
+		noteSection,
 	)
 	err := sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, e.debug)
 	if err != nil {
@@ -1558,6 +1680,7 @@ func (f *FileAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target
 		"level":                 "error",
 		"service.name":          "quick_watch",
 		"alert.type":            "down",
+		"alert.count":           result.AlertCount,
 		"target.name":           target.Name,
 		"target.url":            target.URL,
 		"http.status_code":      result.StatusCode,
@@ -1578,7 +1701,15 @@ func (f *FileAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target
 }
 
 // SendAcknowledgement sends acknowledgement notification to the log file
-func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note string) error {
+func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error {
+	attributes := map[string]interface{}{}
+	if note != "" {
+		attributes["note"] = note
+	}
+	if contact != "" {
+		attributes["contact"] = contact
+	}
+
 	logEntry := map[string]interface{}{
 		"timestamp":       time.Now().Format(time.RFC3339Nano),
 		"level":           "info",
@@ -1587,9 +1718,7 @@ func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Tar
 		"target.name":     target.Name,
 		"target.url":      target.URL,
 		"acknowledged_by": acknowledgedBy,
-		"attributes": map[string]interface{}{
-			"note": note,
-		},
+		"attributes":      attributes,
 	}
 
 	if f.debug {
@@ -1620,7 +1749,7 @@ func (f *FileAlertStrategy) HandleNotification(ctx context.Context, notification
 		"hook.type":    notification.Type,
 		"message":      notification.Message,
 	}
-	
+
 	if len(notification.Data) > 0 {
 		logEntry["hook.data"] = notification.Data
 	}
@@ -1635,16 +1764,16 @@ func (f *FileAlertStrategy) HandleNotification(ctx context.Context, notification
 // HandleNotificationWithAck handles incoming notifications with acknowledgement link
 func (f *FileAlertStrategy) HandleNotificationWithAck(ctx context.Context, notification *WebhookNotification, ackURL string) error {
 	logEntry := map[string]interface{}{
-		"timestamp":          notification.Timestamp.Format(time.RFC3339Nano),
-		"level":              "info",
-		"service.name":       "quick_watch",
-		"event.type":         "hook_notification",
-		"hook.name":          notification.Target,
-		"hook.type":          notification.Type,
-		"message":            notification.Message,
+		"timestamp":           notification.Timestamp.Format(time.RFC3339Nano),
+		"level":               "info",
+		"service.name":        "quick_watch",
+		"event.type":          "hook_notification",
+		"hook.name":           notification.Target,
+		"hook.type":           notification.Type,
+		"message":             notification.Message,
 		"acknowledgement_url": ackURL,
 	}
-	
+
 	if len(notification.Data) > 0 {
 		logEntry["hook.data"] = notification.Data
 	}
@@ -1657,16 +1786,19 @@ func (f *FileAlertStrategy) HandleNotificationWithAck(ctx context.Context, notif
 }
 
 // SendNotificationAcknowledgement logs hook acknowledgement to file
-func (f *FileAlertStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note string) error {
+func (f *FileAlertStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error {
 	logEntry := map[string]interface{}{
-		"timestamp":      time.Now().Format(time.RFC3339Nano),
-		"level":          "info",
-		"service.name":   "quick_watch",
-		"event.type":     "hook_acknowledged",
-		"hook.name":      hookName,
+		"timestamp":       time.Now().Format(time.RFC3339Nano),
+		"level":           "info",
+		"service.name":    "quick_watch",
+		"event.type":      "hook_acknowledged",
+		"hook.name":       hookName,
 		"acknowledged_by": acknowledgedBy,
 	}
-	
+
+	if contact != "" {
+		logEntry["acknowledgement_contact"] = contact
+	}
 	if note != "" {
 		logEntry["acknowledgement_note"] = note
 	}

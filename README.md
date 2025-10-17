@@ -8,6 +8,8 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 
 - **Simple URL Monitoring**: Check URLs every 5 seconds for response time, status codes, and response size
 - **Threshold-Based Alerting**: Configure how long a service can be down before firing alerts
+- **Exponential Backoff Alerts**: Intelligent alert throttling with exponential backoff (5s, 10s, 20s, 40s, etc.) to prevent alert fatigue
+- **Alert Acknowledgements**: Acknowledge alerts to stop repeated notifications while investigating issues
 - **All-Clear Notifications**: Automatically notify when services recover
 - **Webhook Support**: Receive external notifications and handle them with configurable strategies
 - **Strategy Pattern**: Pluggable strategies for checks, alerts, and notifications
@@ -73,9 +75,78 @@ targets:
 settings:
   webhook_port: 8080
   webhook_path: "/webhook"
+  server_address: "https://monitor.example.com:8080"  # Optional: Public-facing server address for alert URLs (defaults to http://localhost:PORT)
   check_interval: 5
   default_threshold: 30  # seconds (30s)
 ```
+
+## Advanced Features
+
+### Exponential Backoff Alerts
+
+Quick Watch automatically implements exponential backoff to prevent alert fatigue. When a target goes down, alerts are sent with progressively increasing intervals:
+
+| Failure # | Time Since Last Alert | Cumulative Time |
+|-----------|----------------------|-----------------|
+| 1         | Immediate            | 0 seconds       |
+| 2         | 5 seconds            | 5 seconds       |
+| 3         | 10 seconds           | 15 seconds      |
+| 4         | 20 seconds           | 35 seconds      |
+| 5         | 40 seconds           | 75 seconds      |
+| 6         | 80 seconds           | ~2.5 minutes    |
+| 7         | 160 seconds          | ~5 minutes      |
+| 8         | 320 seconds          | ~10 minutes     |
+
+**Backoff Formula**: `5 × 2^(failure_count-1)` seconds
+
+**Important**: 
+- Once an alert is **acknowledged**, all subsequent alerts stop until the service recovers
+- When a service recovers, counters reset and the next incident starts fresh
+- No configuration needed - works automatically for all targets
+
+For more details, see [EXPONENTIAL_BACKOFF.md](EXPONENTIAL_BACKOFF.md).
+
+### Alert Acknowledgements
+
+Enable acknowledgements in your configuration to allow team members to acknowledge alerts:
+
+```yaml
+settings:
+  acknowledgements_enabled: true
+  server_address: "https://monitor.example.com:8080"  # Your public-facing server address
+```
+
+When enabled:
+- Each alert includes an acknowledgement URL
+- Clicking the URL stops further alerts for that incident
+- Alerts resume only after the service recovers and goes down again
+- Responders can provide their name, contact info (Slack, Zoom, phone), and notes
+- Contact information is distributed to all configured alert strategies
+
+#### Configuring the Server Address
+
+The `server_address` setting is crucial for acknowledgement URLs to work in production:
+
+**Without `server_address`** (default):
+```
+Acknowledgement URL: http://localhost:8080/api/acknowledge/abc123
+```
+This will only work on the local machine and won't be accessible to remote team members.
+
+**With `server_address`** (recommended for production):
+```yaml
+settings:
+  server_address: "https://monitor.example.com:8080"
+```
+```
+Acknowledgement URL: https://monitor.example.com:8080/api/acknowledge/abc123
+```
+
+**Common scenarios:**
+- **Behind a reverse proxy**: `server_address: "https://monitoring.company.com"`
+- **Cloud deployment**: `server_address: "https://monitor.example.com:8080"`
+- **Docker with port mapping**: `server_address: "http://your-server-ip:9000"`
+- **Local testing**: Omit `server_address` to use `http://localhost:PORT`
 
 ## Strategy Patterns
 
@@ -231,6 +302,7 @@ targets:
 settings:
   webhook_port: 8080
   webhook_path: "/webhook"
+  server_address: "https://monitor.example.com:8080"  # Optional: Public-facing server address for alert URLs
   check_interval: 5
   default_threshold: 30  # seconds (30s)
 

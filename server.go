@@ -43,13 +43,17 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Get settings
 	settings := s.stateManager.GetSettings()
-	
+
 	// Configure acknowledgements
 	port := settings.WebhookPort
 	if port == 0 {
 		port = 8080
 	}
-	serverAddress := fmt.Sprintf("http://localhost:%d", port)
+	// Use configured server address or default to localhost
+	serverAddress := settings.ServerAddress
+	if serverAddress == "" {
+		serverAddress = fmt.Sprintf("http://localhost:%d", port)
+	}
 	s.engine.SetAcknowledgementConfig(serverAddress, settings.AcknowledgementsEnabled)
 
 	// Start targeting
@@ -103,10 +107,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Log unified server startup
 	log.Printf("Starting Quick Watch unified server on port %d", port)
-	log.Printf("Webhook endpoint: http://0.0.0.0:%d%s", port, webhookPath)
-	log.Printf("API endpoints: http://0.0.0.0:%d/api/*", port)
-	log.Printf("Health check: http://0.0.0.0:%d/health", port)
-	log.Printf("Status: http://0.0.0.0:%d/status", port)
+
+	// Use configured server address or localhost
+	displayAddr := serverAddress
+	if displayAddr == "" {
+		displayAddr = fmt.Sprintf("http://localhost:%d", port)
+		log.Printf("⚠️  Server address not configured - using localhost")
+	}
+
+	log.Printf("Webhook endpoint: %s%s", displayAddr, webhookPath)
+	log.Printf("API endpoints: %s/api/*", displayAddr)
+	log.Printf("Health check: %s/health", displayAddr)
+	log.Printf("Status: %s/status", displayAddr)
 
 	// Start server in goroutine
 	go func() {
@@ -213,11 +225,11 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 						TriggeredAt: time.Now(),
 						AckToken:    token,
 					}
-					
+
 					s.engine.ackMutex.Lock()
 					s.engine.hookAckTokenMap[token] = hookState
 					s.engine.ackMutex.Unlock()
-					
+
 					ackURL = s.engine.GetAcknowledgementURL(token)
 				}
 			}
@@ -625,6 +637,8 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAcknowledge handles alert acknowledgement requests
+// GET: Immediately acknowledges and shows contact form
+// POST: Updates acknowledgement info and sends notifications
 func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 	// Extract token from path
 	path := strings.TrimPrefix(r.URL.Path, "/api/acknowledge/")
@@ -635,332 +649,460 @@ func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
 
 	token := path
 
-	// Get acknowledger info from query params or form
-	acknowledgedBy := r.URL.Query().Get("by")
-	if acknowledgedBy == "" {
-		acknowledgedBy = r.FormValue("by")
-	}
-	if acknowledgedBy == "" {
-		acknowledgedBy = "Anonymous"
-	}
-
-	note := r.URL.Query().Get("note")
-	if note == "" {
-		note = r.FormValue("note")
-	}
-
 	// Check if this is a target alert or hook by looking up the token
-	var isHook bool
-	var alreadyAcknowledged bool
-	var targetName, targetURL, hookMessage string
-	var previouslyAcknowledgedBy string
-	var previouslyAcknowledgedAt time.Time
-	
-	// First check if it's a target alert token
 	s.engine.ackMutex.RLock()
 	state, isTargetToken := s.engine.ackTokenMap[token]
+	var hookState *HookState
+	var isHook bool
+	if !isTargetToken {
+		hookState, isHook = s.engine.hookAckTokenMap[token]
+	}
 	s.engine.ackMutex.RUnlock()
-	
-	if isTargetToken {
-		// It's a target alert
-		isHook = false
-		targetName = state.Target.Name
-		targetURL = state.Target.URL
-		
-		// Check if already acknowledged
-		if state.AcknowledgedAt != nil {
-			alreadyAcknowledged = true
-			previouslyAcknowledgedBy = state.AcknowledgedBy
-			previouslyAcknowledgedAt = *state.AcknowledgedAt
-		} else {
-			// First acknowledgement - acknowledge it
-			_, err := s.engine.AcknowledgeAlert(token, acknowledgedBy, note)
+
+	if !isTargetToken && !isHook {
+		log.Printf("Error: Token not found: %s", token)
+		http.Error(w, "Invalid or expired acknowledgement token", http.StatusBadRequest)
+		return
+	}
+
+	// Handle POST request (form submission)
+	if r.Method == "POST" {
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+
+		acknowledgedBy := r.FormValue("name")
+		if acknowledgedBy == "" {
+			acknowledgedBy = "Anonymous"
+		}
+		note := r.FormValue("notes")
+		contact := r.FormValue("contact")
+
+		if isTargetToken {
+			// Update target acknowledgement
+			_, err := s.engine.AcknowledgeAlert(token, acknowledgedBy, note, contact)
 			if err != nil {
-				log.Printf("Error acknowledging target alert: %v", err)
-				http.Error(w, "Failed to acknowledge alert", http.StatusInternalServerError)
+				log.Printf("Error updating target acknowledgement: %v", err)
+				http.Error(w, "Failed to update acknowledgement", http.StatusInternalServerError)
 				return
 			}
-			
-			// Send notifications
+
+			// Send updated notifications to all strategies
 			for _, strat := range state.AlertStrategies {
 				if ackStrat, ok := strat.(AcknowledgementAwareAlert); ok {
-					if err := ackStrat.SendAcknowledgement(r.Context(), state.Target, acknowledgedBy, note); err != nil {
+					if err := ackStrat.SendAcknowledgement(r.Context(), state.Target, acknowledgedBy, note, contact); err != nil {
 						log.Printf("Failed to send acknowledgement notification via %s: %v", strat.Name(), err)
 					}
 				}
 			}
-		}
-	} else {
-		// Try as a hook token
-		s.engine.ackMutex.Lock()
-		hookState, exists := s.engine.hookAckTokenMap[token]
-		if !exists {
-			s.engine.ackMutex.Unlock()
-			log.Printf("Error: Token not found: %s", token)
-			http.Error(w, "Invalid or expired acknowledgement token", http.StatusBadRequest)
-			return
-		}
-		
-		isHook = true
-		targetName = hookState.HookName
-		hookMessage = hookState.Message
-		
-		// Check if already acknowledged
-		if hookState.AcknowledgedAt != nil {
-			alreadyAcknowledged = true
-			previouslyAcknowledgedBy = hookState.AcknowledgedBy
-			previouslyAcknowledgedAt = *hookState.AcknowledgedAt
-			s.engine.ackMutex.Unlock()
+
+			// Show success message
+			s.showAcknowledgementSuccess(w, state.Target.Name, state.Target.URL, acknowledgedBy, note, contact, false)
 		} else {
-			// First acknowledgement - mark as acknowledged
-			now := time.Now()
-			hookState.AcknowledgedAt = &now
+			// Update hook acknowledgement
+			s.engine.ackMutex.Lock()
 			hookState.AcknowledgedBy = acknowledgedBy
 			hookState.AcknowledgementNote = note
+			hookState.AcknowledgementContact = contact
 			s.engine.ackMutex.Unlock()
-			
+
 			// Send acknowledgement notification to all notification strategies
 			hooks := s.stateManager.ListHooks()
 			if hook, exists := hooks[hookState.HookName]; exists {
 				for _, alertName := range hook.Alerts {
 					if strat, exists := s.engine.notificationStrategies[alertName]; exists {
 						if ackStrat, ok := strat.(AcknowledgementAwareNotification); ok {
-							if err := ackStrat.SendNotificationAcknowledgement(r.Context(), hookState.HookName, acknowledgedBy, note); err != nil {
+							if err := ackStrat.SendNotificationAcknowledgement(r.Context(), hookState.HookName, acknowledgedBy, note, contact); err != nil {
 								log.Printf("Failed to send hook acknowledgement notification via %s: %v", alertName, err)
 							}
 						}
 					}
 				}
 			}
+
+			// Show success message
+			s.showAcknowledgementSuccess(w, hookState.HookName, hookState.Message, acknowledgedBy, note, contact, true)
 		}
+		return
 	}
 
-	// Return a nice HTML response for browser users
+	// Handle GET request - immediately acknowledge and show form
+	if isTargetToken {
+		// Acknowledge target alert if not already acknowledged
+		if state.AcknowledgedAt == nil {
+			_, err := s.engine.AcknowledgeAlert(token, "Pending", "", "")
+			if err != nil {
+				log.Printf("Error acknowledging target alert: %v", err)
+				http.Error(w, "Failed to acknowledge alert", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Show contact form
+		s.showAcknowledgementForm(w, token, state.Target.Name, state.Target.URL, false, state.AcknowledgedBy, state.AcknowledgementNote, state.AcknowledgementContact)
+	} else {
+		// Acknowledge hook if not already acknowledged
+		if hookState.AcknowledgedAt == nil {
+			s.engine.ackMutex.Lock()
+			now := time.Now()
+			hookState.AcknowledgedAt = &now
+			hookState.AcknowledgedBy = "Pending"
+			s.engine.ackMutex.Unlock()
+		}
+
+		// Show contact form
+		s.showAcknowledgementForm(w, token, hookState.HookName, hookState.Message, true, hookState.AcknowledgedBy, hookState.AcknowledgementNote, hookState.AcknowledgementContact)
+	}
+
+}
+
+// showAcknowledgementForm displays the interactive acknowledgement form
+func (s *Server) showAcknowledgementForm(w http.ResponseWriter, token, name, urlOrMessage string, isHook bool, existingName, existingNote, existingContact string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
-	var html string
-	
-	if alreadyAcknowledged {
-		// Already acknowledged - show info page
-		if isHook {
-			html = fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Already Acknowledged</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            text-align: center;
-        }
-        .info {
-            background-color: #2196F3;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .details {
-            background-color: #f5f5f5;
-            padding: 20px;
-            border-radius: 5px;
-            text-align: left;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="info">
-        <div class="icon">ℹ️</div>
-        <h1>Already Acknowledged</h1>
-        <p>This notification has already been acknowledged.</p>
-    </div>
-    <div class="details">
-        <h3>Details:</h3>
-        <p><strong>Hook:</strong> %s</p>
-        <p><strong>Message:</strong> %s</p>
-        <p><strong>Previously acknowledged by:</strong> %s</p>
-        <p><strong>Acknowledged at:</strong> %s</p>
-    </div>
-    <p><small>You can close this window now.</small></p>
-</body>
-</html>`, targetName, hookMessage, previouslyAcknowledgedBy, previouslyAcknowledgedAt.Format("2006-01-02 15:04:05"))
-		} else {
-			html = fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Already Acknowledged</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            text-align: center;
-        }
-        .info {
-            background-color: #2196F3;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .details {
-            background-color: #f5f5f5;
-            padding: 20px;
-            border-radius: 5px;
-            text-align: left;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="info">
-        <div class="icon">ℹ️</div>
-        <h1>Already Acknowledged</h1>
-        <p>This alert has already been acknowledged.</p>
-    </div>
-    <div class="details">
-        <h3>Details:</h3>
-        <p><strong>Target:</strong> %s</p>
-        <p><strong>URL:</strong> %s</p>
-        <p><strong>Previously acknowledged by:</strong> %s</p>
-        <p><strong>Acknowledged at:</strong> %s</p>
-    </div>
-    <p><small>You can close this window now.</small></p>
-</body>
-</html>`, targetName, targetURL, previouslyAcknowledgedBy, previouslyAcknowledgedAt.Format("2006-01-02 15:04:05"))
-		}
-	} else if isHook {
-		// Hook acknowledgement response
-		html = fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Notification Acknowledged</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            text-align: center;
-        }
-        .success {
-            background-color: #4CAF50;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .details {
-            background-color: #f5f5f5;
-            padding: 20px;
-            border-radius: 5px;
-            text-align: left;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="success">
-        <div class="icon">✅</div>
-        <h1>Notification Acknowledged</h1>
-        <p>Thank you for acknowledging this notification!</p>
-    </div>
-    <div class="details">
-        <h3>Details:</h3>
-        <p><strong>Hook:</strong> %s</p>
-        <p><strong>Message:</strong> %s</p>
-        <p><strong>Acknowledged by:</strong> %s</p>
-        <p><strong>Time:</strong> %s</p>
-        %s
-    </div>
-    <p><small>You can close this window now.</small></p>
-</body>
-</html>`, targetName, hookMessage, acknowledgedBy, time.Now().Format("2006-01-02 15:04:05"),
-			func() string {
-				if note != "" {
-					return fmt.Sprintf("<p><strong>Note:</strong> %s</p>", note)
-				}
-				return ""
-			}())
-	} else {
-		// Target alert acknowledgement response
-		html = fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Alert Acknowledged</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            text-align: center;
-        }
-        .success {
-            background-color: #4CAF50;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .details {
-            background-color: #f5f5f5;
-            padding: 20px;
-            border-radius: 5px;
-            text-align: left;
-        }
-        .icon {
-            font-size: 48px;
-            margin-bottom: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="success">
-        <div class="icon">✅</div>
-        <h1>Alert Acknowledged</h1>
-        <p>Thank you for acknowledging this alert!</p>
-    </div>
-    <div class="details">
-        <h3>Details:</h3>
-        <p><strong>Target:</strong> %s</p>
-        <p><strong>URL:</strong> %s</p>
-        <p><strong>Acknowledged by:</strong> %s</p>
-        <p><strong>Time:</strong> %s</p>
-        %s
-    </div>
-    <p><small>You can close this window now.</small></p>
-</body>
-</html>`, targetName, targetURL, acknowledgedBy, time.Now().Format("2006-01-02 15:04:05"),
-			func() string {
-				if note != "" {
-					return fmt.Sprintf("<p><strong>Note:</strong> %s</p>", note)
-				}
-				return ""
-			}())
+	// Pre-fill form if user already submitted once
+	if existingName == "Pending" {
+		existingName = ""
 	}
+
+	title := "Alert Acknowledged"
+	itemLabel := "Target"
+	if isHook {
+		title = "Notification Acknowledged"
+		itemLabel = "Hook"
+	}
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>%s</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 700px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4CAF50 0%%, #45a049 100%%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header .icon {
+            font-size: 64px;
+            margin-bottom: 10px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 30px;
+        }
+        .alert-info {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 4px;
+        }
+        .alert-info p {
+            margin: 5px 0;
+            color: #1565c0;
+        }
+        .alert-info strong {
+            color: #0d47a1;
+        }
+        .form-section {
+            margin-bottom: 30px;
+        }
+        .form-section h2 {
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input[type="text"],
+        textarea {
+            width: 100%%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            box-sizing: border-box;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        .helper-text {
+            font-size: 12px;
+            color: #777;
+            margin-top: 5px;
+        }
+        .submit-btn {
+            background: linear-gradient(135deg, #4CAF50 0%%, #45a049 100%%);
+            color: white;
+            border: none;
+            padding: 14px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        }
+        .submit-btn:active {
+            transform: translateY(0);
+        }
+        .success-message {
+            background-color: #f1f8e9;
+            border: 2px solid #8bc34a;
+            color: #33691e;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">✅</div>
+            <h1>%s</h1>
+            <p style="margin: 10px 0 0 0; opacity: 0.9;">Alert has been acknowledged. Please provide your contact information.</p>
+        </div>
+        <div class="content">
+            <div class="alert-info">
+                <p><strong>%s:</strong> %s</p>
+                <p><strong>%s:</strong> %s</p>
+            </div>
+            
+            <div class="form-section">
+                <h2>👤 Contact Information</h2>
+                <p style="color: #666; margin-bottom: 20px;">Help your team reach you if they need assistance with this issue.</p>
+                
+                <form method="POST" action="/api/acknowledge/%s">
+                    <div class="form-group">
+                        <label for="name">Your Name *</label>
+                        <input type="text" id="name" name="name" required 
+                               placeholder="e.g., John Doe" value="%s">
+                        <div class="helper-text">Who's handling this issue?</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="contact">Contact Me Here *</label>
+                        <input type="text" id="contact" name="contact" required 
+                               placeholder="e.g., Slack: @john, Zoom: https://zoom.us/j/123, Phone: +1-555-0100" value="%s">
+                        <div class="helper-text">How can others reach you? (Slack channel, Zoom link, phone number, email, etc.)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="notes">Notes</label>
+                        <textarea id="notes" name="notes" 
+                                  placeholder="e.g., Investigating database connection issues. Will update in #incidents channel.">%s</textarea>
+                        <div class="helper-text">Optional: Add any relevant notes about your investigation</div>
+                    </div>
+                    
+                    <button type="submit" class="submit-btn">
+                        📤 Share Contact Info &amp; Update Team
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`, title, title, itemLabel, name,
+		func() string {
+			if isHook {
+				return "Message"
+			} else {
+				return "URL"
+			}
+		}(),
+		urlOrMessage, token, existingName, existingContact, existingNote)
+
+	w.Write([]byte(html))
+}
+
+// showAcknowledgementSuccess displays the success message after form submission
+func (s *Server) showAcknowledgementSuccess(w http.ResponseWriter, name, urlOrMessage, acknowledgedBy, note, contact string, isHook bool) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	title := "Alert Acknowledged"
+	itemLabel := "Target"
+	if isHook {
+		title = "Notification Acknowledged"
+		itemLabel = "Hook"
+	}
+
+	contactSection := ""
+	if contact != "" {
+		contactSection = fmt.Sprintf("<p><strong>Contact:</strong> %s</p>", contact)
+	}
+	noteSection := ""
+	if note != "" {
+		noteSection = fmt.Sprintf("<p><strong>Notes:</strong> %s</p>", note)
+	}
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>%s</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4CAF50 0%%, #45a049 100%%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header .icon {
+            font-size: 72px;
+            margin-bottom: 15px;
+            animation: checkmark 0.5s ease-in-out;
+        }
+        @keyframes checkmark {
+            0%% { transform: scale(0); }
+            50%% { transform: scale(1.2); }
+            100%% { transform: scale(1); }
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 30px;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .details p {
+            margin: 10px 0;
+            color: #333;
+            line-height: 1.6;
+        }
+        .details strong {
+            color: #1976d2;
+            display: inline-block;
+            min-width: 140px;
+        }
+        .success-badge {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            padding: 12px 20px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: 600;
+            margin: 20px 0;
+            border-left: 4px solid #4caf50;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            color: #777;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">✅</div>
+            <h1>Information Shared!</h1>
+            <p style="margin: 15px 0 0 0; opacity: 0.9; font-size: 16px;">Your team has been notified with your contact information.</p>
+        </div>
+        <div class="content">
+            <div class="success-badge">
+                📢 Team members have been notified via all configured alert channels
+            </div>
+            
+            <div class="details">
+                <h3 style="margin-top: 0; color: #333;">Details:</h3>
+                <p><strong>%s:</strong> %s</p>
+                <p><strong>%s:</strong> %s</p>
+                <p><strong>Acknowledged By:</strong> %s</p>
+                <p><strong>Time:</strong> %s</p>
+                %s
+                %s
+            </div>
+            
+            <div class="footer">
+                <p>✓ All configured alert strategies have been updated</p>
+                <p><small>You can close this window now</small></p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`, title, itemLabel, name,
+		func() string {
+			if isHook {
+				return "Message"
+			} else {
+				return "URL"
+			}
+		}(),
+		urlOrMessage, acknowledgedBy, time.Now().Format("2006-01-02 15:04:05 MST"),
+		contactSection, noteSection)
 
 	w.Write([]byte(html))
 }
