@@ -401,7 +401,7 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 	historyEntry := CheckHistoryEntry{
 		Timestamp:    result.Timestamp,
 		Success:      result.Success,
-		ResponseTime: int64(result.ResponseTime),
+		ResponseTime: int64(result.ResponseTime.Milliseconds()), // Convert nanoseconds to milliseconds
 		ResponseSize: result.ResponseSize,
 		StatusCode:   result.StatusCode,
 		ErrorMessage: result.Error,

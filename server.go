@@ -2108,21 +2108,68 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
     <script>
         const chartData = %s;
         
+        // Format labels for display
+        const labels = chartData.map(d => {
+            const date = new Date(d.timestamp);
+            return date.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit',
+                hour12: false 
+            });
+        });
+        
+        // Helper function to format seconds with up to 4 significant digits
+        function formatSeconds(ms) {
+            const seconds = ms / 1000;
+            if (seconds === 0) return '0';
+            
+            // Determine precision based on magnitude
+            if (seconds >= 1000) {
+                return seconds.toPrecision(4);
+            } else if (seconds >= 100) {
+                return seconds.toPrecision(4);
+            } else if (seconds >= 10) {
+                return seconds.toPrecision(4);
+            } else if (seconds >= 1) {
+                return seconds.toPrecision(4);
+            } else {
+                return seconds.toPrecision(4);
+            }
+        }
+        
         const ctx = document.getElementById('responseChart').getContext('2d');
         const chart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: chartData.map(d => new Date(d.timestamp)),
+                labels: labels,
                 datasets: [{
-                    label: 'Response Time (ms)',
-                    data: chartData.map(d => d.success ? d.responseTime : null),
+                    label: 'Response Time (s)',
+                    data: chartData.map(d => d.success ? d.responseTime / 1000 : 0),
                     borderColor: '#3fb950',
                     backgroundColor: 'rgba(63, 185, 80, 0.1)',
                     borderWidth: 2,
                     tension: 0.4,
                     pointRadius: 2,
                     pointHoverRadius: 5,
-                    spanGaps: false
+                    spanGaps: false,
+                    fill: true,
+                    pointBackgroundColor: chartData.map(d => d.success ? '#3fb950' : '#f85149'),
+                    pointBorderColor: chartData.map(d => d.success ? '#3fb950' : '#f85149'),
+                    pointHoverBackgroundColor: chartData.map(d => d.success ? '#3fb950' : '#f85149'),
+                    pointHoverBorderColor: chartData.map(d => d.success ? '#fff' : '#fff'),
+                    segment: {
+                        borderColor: ctx => {
+                            const idx = ctx.p0DataIndex;
+                            const p0Success = chartData[idx]?.success;
+                            const p1Success = chartData[idx + 1]?.success;
+                            // Draw red line segment if either point is a failure
+                            if (!p0Success || !p1Success) {
+                                return '#f85149';
+                            }
+                            return '#3fb950';
+                        }
+                    }
                 }, {
                     label: 'Failed Checks',
                     data: chartData.map(d => !d.success ? 0 : null),
@@ -2145,7 +2192,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 plugins: {
                     legend: {
                         labels: {
-                            color: '#c9d1d9'
+                            color: '#c9d1d9',
+                            font: {
+                                size: 12
+                            }
                         }
                     },
                     tooltip: {
@@ -2154,39 +2204,64 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                         borderWidth: 1,
                         titleColor: '#f0f6fc',
                         bodyColor: '#c9d1d9',
+                        padding: 12,
+                        displayColors: true,
                         callbacks: {
                             title: function(context) {
-                                return new Date(context[0].parsed.x).toLocaleString();
+                                const idx = context[0].dataIndex;
+                                const date = new Date(chartData[idx].timestamp);
+                                return date.toLocaleString();
+                            },
+                            label: function(context) {
+                                const idx = context.dataIndex;
+                                const entry = chartData[idx];
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (entry.success) {
+                                    label += formatSeconds(entry.responseTime) + 's';
+                                } else {
+                                    label += 'Failed (0s)';
+                                }
+                                return label;
                             }
                         }
                     }
                 },
                 scales: {
                     x: {
-                        type: 'time',
-                        time: {
-                            unit: 'minute',
-                            displayFormats: {
-                                minute: 'HH:mm',
-                                hour: 'HH:mm'
-                            }
-                        },
                         grid: {
-                            color: '#30363d'
+                            color: '#30363d',
+                            drawBorder: false
                         },
                         ticks: {
-                            color: '#8b949e'
+                            color: '#8b949e',
+                            maxRotation: 45,
+                            minRotation: 0,
+                            maxTicksLimit: 10,
+                            font: {
+                                size: 11
+                            }
                         }
                     },
                     y: {
                         beginAtZero: true,
                         grid: {
-                            color: '#30363d'
+                            color: '#30363d',
+                            drawBorder: false
                         },
                         ticks: {
                             color: '#8b949e',
+                            font: {
+                                size: 11
+                            },
                             callback: function(value) {
-                                return value + 'ms';
+                                // Format y-axis ticks with up to 4 significant digits
+                                if (value === 0) return '0s';
+                                const str = value.toPrecision(4);
+                                // Remove trailing zeros after decimal
+                                return parseFloat(str) + 's';
                             }
                         }
                     }

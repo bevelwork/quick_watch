@@ -258,10 +258,11 @@ http://localhost:8080/targets/{target-name}
 **📈 Real-Time Line Graph:**
 - Large, interactive response time graph using Chart.js
 - Shows the last 100 checks
-- Green line for response times
-- Red crosses mark failed checks
-- Time-based X-axis with automatic scaling
-- Hover for detailed timestamps and values
+- Green line for successful response times (in seconds, up to 4 significant digits)
+- Failed checks drop to 0s and turn the line red for that segment
+- Red crosses mark failed check points at y=0
+- Time-based X-axis with automatic scaling (HH:MM:SS format)
+- Hover for detailed timestamps and precise values
 - Automatically updates with new data every 5 seconds
 
 **📋 GitHub Actions-Style Terminal Log:**
