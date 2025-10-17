@@ -1,16 +1,22 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/smtp"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	qc "github.com/bevelwork/quick_color"
@@ -918,4 +924,302 @@ func sanitizeSlackWebhookURL(raw string) string {
 		last3 = trimmed
 	}
 	return parsed.Scheme + "://" + parsed.Host + "/services/" + first3 + "***" + last3
+}
+
+// FileAlertStrategy implements file-based alerting with OTEL-like JSON logs
+type FileAlertStrategy struct {
+	filePath              string
+	debug                 bool
+	maxSizeBeforeCompress int64 // in bytes (converted from MB in config)
+	lastRotationCheck     time.Time
+	rotationMutex         sync.Mutex
+}
+
+// NewFileAlertStrategy creates a new file alert strategy
+func NewFileAlertStrategy(filePath string) *FileAlertStrategy {
+	return &FileAlertStrategy{
+		filePath:              filePath,
+		debug:                 false,
+		maxSizeBeforeCompress: 0, // disabled by default
+		lastRotationCheck:     time.Now(),
+	}
+}
+
+// NewFileAlertStrategyWithDebug creates a new file alert strategy with debug option
+func NewFileAlertStrategyWithDebug(filePath string, debug bool) *FileAlertStrategy {
+	return &FileAlertStrategy{
+		filePath:              filePath,
+		debug:                 debug,
+		maxSizeBeforeCompress: 0, // disabled by default
+		lastRotationCheck:     time.Now(),
+	}
+}
+
+// NewFileAlertStrategyWithRotation creates a new file alert strategy with rotation
+func NewFileAlertStrategyWithRotation(filePath string, debug bool, maxSizeMB int64) *FileAlertStrategy {
+	return &FileAlertStrategy{
+		filePath:              filePath,
+		debug:                 debug,
+		maxSizeBeforeCompress: maxSizeMB * 1024 * 1024, // convert MB to bytes
+		lastRotationCheck:     time.Now(),
+	}
+}
+
+// SendAlert sends a DOWN alert to the log file in OTEL-like JSON format
+func (f *FileAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
+	logEntry := map[string]interface{}{
+		"timestamp":             result.Timestamp.Format(time.RFC3339Nano),
+		"level":                 "error",
+		"service.name":          "quick_watch",
+		"alert.type":            "down",
+		"target.name":           target.Name,
+		"target.url":            target.URL,
+		"http.status_code":      result.StatusCode,
+		"http.response_time_ms": result.ResponseTime.Milliseconds(),
+		"error.message":         result.Error,
+		"attributes": map[string]interface{}{
+			"check_strategy": target.CheckStrategy,
+			"threshold":      target.Threshold,
+		},
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Writing DOWN alert to %s\n", f.filePath)
+	}
+
+	return f.appendLogEntry(logEntry)
+}
+
+// SendAllClear sends an UP notification to the log file in OTEL-like JSON format
+func (f *FileAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
+	logEntry := map[string]interface{}{
+		"timestamp":             result.Timestamp.Format(time.RFC3339Nano),
+		"level":                 "info",
+		"service.name":          "quick_watch",
+		"alert.type":            "all_clear",
+		"target.name":           target.Name,
+		"target.url":            target.URL,
+		"http.status_code":      result.StatusCode,
+		"http.response_time_ms": result.ResponseTime.Milliseconds(),
+		"attributes": map[string]interface{}{
+			"check_strategy": target.CheckStrategy,
+			"threshold":      target.Threshold,
+		},
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Writing ALL_CLEAR to %s\n", f.filePath)
+	}
+
+	return f.appendLogEntry(logEntry)
+}
+
+// SendStartupMessage sends a startup notification to the log file
+func (f *FileAlertStrategy) SendStartupMessage(ctx context.Context, version string, targetCount int) error {
+	logEntry := map[string]interface{}{
+		"timestamp":       time.Now().Format(time.RFC3339Nano),
+		"level":           "info",
+		"service.name":    "quick_watch",
+		"event.name":      "startup",
+		"service.version": version,
+		"attributes": map[string]interface{}{
+			"target_count": targetCount,
+		},
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Writing STARTUP to %s\n", f.filePath)
+	}
+
+	if err := f.appendLogEntry(logEntry); err != nil {
+		return err
+	}
+
+	fmt.Printf("📄 FILE: Startup notification written to %s\n", f.filePath)
+	return nil
+}
+
+// appendLogEntry appends a JSON log entry to the file
+func (f *FileAlertStrategy) appendLogEntry(entry map[string]interface{}) error {
+	// Check if rotation is needed (once per hour)
+	if err := f.checkAndRotate(); err != nil {
+		// Log error but don't fail the write
+		fmt.Printf("⚠️  FILE: Rotation check failed: %v\n", err)
+	}
+
+	jsonData, err := json.Marshal(entry)
+	if err != nil {
+		if f.debug {
+			fmt.Printf("🐛 FILE DEBUG: Failed to marshal JSON: %v\n", err)
+		}
+		return fmt.Errorf("failed to marshal log entry: %w", err)
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: JSON: %s\n", string(jsonData))
+	}
+
+	// Ensure parent directory exists
+	dir := filepath.Dir(f.filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		if f.debug {
+			fmt.Printf("🐛 FILE DEBUG: Failed to create directory: %v\n", err)
+		}
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	// Open file in append mode, create if doesn't exist
+	file, err := os.OpenFile(f.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		if f.debug {
+			fmt.Printf("🐛 FILE DEBUG: Failed to open file: %v\n", err)
+		}
+		return fmt.Errorf("failed to open log file %s: %w", f.filePath, err)
+	}
+	defer file.Close()
+
+	// Write JSON line
+	if _, err := file.Write(append(jsonData, '\n')); err != nil {
+		if f.debug {
+			fmt.Printf("🐛 FILE DEBUG: Failed to write: %v\n", err)
+		}
+		return fmt.Errorf("failed to write to log file: %w", err)
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Successfully wrote to %s\n", f.filePath)
+	}
+
+	fmt.Printf("📄 FILE: Alert logged to %s\n", f.filePath)
+	return nil
+}
+
+// checkAndRotate checks if rotation is needed and performs it
+func (f *FileAlertStrategy) checkAndRotate() error {
+	// Skip if rotation is disabled
+	if f.maxSizeBeforeCompress <= 0 {
+		return nil
+	}
+
+	f.rotationMutex.Lock()
+	defer f.rotationMutex.Unlock()
+
+	// Check if an hour has passed since last check
+	if time.Since(f.lastRotationCheck) < time.Hour {
+		return nil
+	}
+
+	f.lastRotationCheck = time.Now()
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Checking file size for rotation\n")
+	}
+
+	// Check file size
+	fileInfo, err := os.Stat(f.filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist yet, nothing to rotate
+			return nil
+		}
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	if fileInfo.Size() < f.maxSizeBeforeCompress {
+		if f.debug {
+			fmt.Printf("🐛 FILE DEBUG: File size %d bytes is below threshold %d bytes\n", fileInfo.Size(), f.maxSizeBeforeCompress)
+		}
+		return nil
+	}
+
+	// Rotate and compress
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: File size %d bytes exceeds threshold %d bytes, rotating\n", fileInfo.Size(), f.maxSizeBeforeCompress)
+	}
+
+	return f.rotateAndCompress()
+}
+
+// rotateAndCompress compresses the current log file and starts fresh
+func (f *FileAlertStrategy) rotateAndCompress() error {
+	timestamp := time.Now().Format("20060102-150405")
+	archiveName := fmt.Sprintf("%s.%s.tar.gz", f.filePath, timestamp)
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Creating archive %s\n", archiveName)
+	}
+
+	// Create tar.gz archive
+	archiveFile, err := os.Create(archiveName)
+	if err != nil {
+		return fmt.Errorf("failed to create archive file: %w", err)
+	}
+	defer archiveFile.Close()
+
+	gzipWriter := gzip.NewWriter(archiveFile)
+	defer gzipWriter.Close()
+
+	tarWriter := tar.NewWriter(gzipWriter)
+	defer tarWriter.Close()
+
+	// Read the original file
+	sourceFile, err := os.Open(f.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	// Get file info for tar header
+	fileInfo, err := sourceFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat source file: %w", err)
+	}
+
+	// Create tar header
+	header := &tar.Header{
+		Name:    filepath.Base(f.filePath),
+		Size:    fileInfo.Size(),
+		Mode:    int64(fileInfo.Mode()),
+		ModTime: fileInfo.ModTime(),
+	}
+
+	if err := tarWriter.WriteHeader(header); err != nil {
+		return fmt.Errorf("failed to write tar header: %w", err)
+	}
+
+	// Copy file contents to tar
+	if _, err := io.Copy(tarWriter, sourceFile); err != nil {
+		return fmt.Errorf("failed to write file to tar: %w", err)
+	}
+
+	// Close all writers to flush
+	if err := tarWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close tar writer: %w", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		return fmt.Errorf("failed to close archive file: %w", err)
+	}
+
+	sourceFile.Close()
+
+	// Remove the original file
+	if err := os.Remove(f.filePath); err != nil {
+		return fmt.Errorf("failed to remove original file: %w", err)
+	}
+
+	fmt.Printf("📦 FILE: Rotated and compressed log to %s\n", archiveName)
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Rotation complete, fresh file will be created on next write\n")
+	}
+
+	return nil
+}
+
+// Name returns the strategy name
+func (f *FileAlertStrategy) Name() string {
+	return "file"
 }

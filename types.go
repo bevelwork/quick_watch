@@ -195,6 +195,34 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 						e.alertStrategies[name] = NewEmailAlertStrategyWithDebug(host, port, username, pwd, to, debug)
 						e.notificationStrategies[name] = NewEmailNotificationStrategy(host, port, username, pwd, to)
 					}
+				case "file":
+					// expected settings: file_path (string), debug (optional bool), max_size_before_compress (optional int/float in MB)
+					filePath, _ := notifier.Settings["file_path"].(string)
+					debug := false
+					if d, ok := notifier.Settings["debug"].(bool); ok {
+						debug = d
+					}
+
+					// Read max_size_before_compress (in MB)
+					var maxSizeMB int64 = 0
+					if maxSize, ok := notifier.Settings["max_size_before_compress"]; ok {
+						switch v := maxSize.(type) {
+						case int:
+							maxSizeMB = int64(v)
+						case int64:
+							maxSizeMB = v
+						case float64:
+							maxSizeMB = int64(v)
+						}
+					}
+
+					if strings.TrimSpace(filePath) != "" {
+						if maxSizeMB > 0 {
+							e.alertStrategies[name] = NewFileAlertStrategyWithRotation(filePath, debug, maxSizeMB)
+						} else {
+							e.alertStrategies[name] = NewFileAlertStrategyWithDebug(filePath, debug)
+						}
+					}
 				case "console":
 					// Respect console notifier settings (style/color)
 					style := "stylized"

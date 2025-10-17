@@ -1007,6 +1007,8 @@ func addAlertsComments(data []byte) []byte {
 		{0, "For slack, 'type: slack' and 'settings.webhook_url' are required.", ""},
 		{0, "For email, 'type: email' and SMTP settings are required.", ""},
 		{0, "  Use settings.password_env to reference an environment variable for SMTP password.", ""},
+		{0, "For file, 'type: file' and 'settings.file_path' are required.", ""},
+		{0, "  Writes OTEL-like JSON logs to the specified file.", ""},
 		{0, "", ""},
 		{0, "Full examples:", ""},
 		{0, "my-console-alert:", ""},
@@ -1039,6 +1041,15 @@ func addAlertsComments(data []byte) []byte {
 		{4, "password_env: SMTP_TOKEN", ""},
 		{4, "to: admin@example.com", ""},
 		{4, "debug: false  # Enable verbose SMTP logging", ""},
+		{0, "", ""},
+		{0, "my-file-alert:", ""},
+		{2, "type: file", ""},
+		{2, "enabled: true", ""},
+		{2, "description: \"File logging alerts\"", ""},
+		{2, "settings:", ""},
+		{4, "file_path: /var/log/quick_watch/alerts.log", ""},
+		{4, "debug: false  # Enable verbose file logging", ""},
+		{4, "max_size_before_compress: 100  # Rotate and compress after 100MB (checked hourly)", ""},
 		{0, "", ""},
 		{0, "", ""},
 	})
@@ -1568,8 +1579,13 @@ func validateAlerts(alerts map[string]NotifierConfig) error {
 			if envName, ok := alert.Settings["password_env"].(string); !ok || strings.TrimSpace(envName) == "" {
 				return fmt.Errorf("alert %s: email password_env is required (name of env var with SMTP password)", name)
 			}
+		case "file":
+			// Validate File settings
+			if filePath, ok := alert.Settings["file_path"].(string); !ok || strings.TrimSpace(filePath) == "" {
+				return fmt.Errorf("alert %s: file file_path is required", name)
+			}
 		default:
-			return fmt.Errorf("alert %s: unknown type '%s', must be 'console', 'slack' or 'email'", name, alert.Type)
+			return fmt.Errorf("alert %s: unknown type '%s', must be 'console', 'slack', 'email', or 'file'", name, alert.Type)
 		}
 	}
 	return nil

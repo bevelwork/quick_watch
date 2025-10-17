@@ -532,6 +532,13 @@ func (s *Server) sendStartupMessage(ctx context.Context) {
 				} else {
 					log.Printf("Startup message sent to %s successfully", alertName)
 				}
+			} else if file, ok := alertStrategy.(*FileAlertStrategy); ok {
+				// For file alerts, write startup log
+				if err := file.SendStartupMessage(ctx, version, targetCount); err != nil {
+					log.Printf("Failed to send startup message to %s: %v", alertName, err)
+				} else {
+					log.Printf("Startup message sent to %s successfully", alertName)
+				}
 			}
 		} else {
 			log.Printf("Warning: Startup alert '%s' not found or not available", alertName)
