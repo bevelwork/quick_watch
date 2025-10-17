@@ -293,30 +293,60 @@ http://localhost:8080/targets/{target-name}
 - Red crosses mark failed check points at y=0
 - Time-based X-axis with automatic scaling (HH:MM:SS format)
 - Hover for detailed timestamps and precise values
-- Automatically updates with new data every 5 seconds
+- **Live streaming updates** every 5 seconds via AJAX (no page reloads!)
+- No animations on refresh for smooth, non-jarring updates
 
 **📋 GitHub Actions-Style Terminal Log:**
 - Streaming log viewer showing all check history
-- Most recent entries at the bottom (like GitHub Actions)
+- **Most recent entries at the top** for easy access to current status
+- **Click any entry to expand** and see full details (just like GitHub Actions job logs!)
 - Color-coded entries:
   - ✅ Green: Successful checks
   - ❌ Red: Failed checks
   - 🔄 Blue: Recovery events
   - 🔔 Yellow: Acknowledged failures
 - Each entry shows:
+  - ▶ Expand indicator (rotates when expanded)
   - Timestamp
   - Status icon
   - Response time or error message
   - HTTP status code
   - Alert count (if alerts were sent)
   - Acknowledgement status
-- Auto-scrolls to show latest entries
+- **Expanded view shows:**
+  - Full timestamp with timezone
+  - Detailed response time and size
+  - Content-Type header
+  - Complete error messages
+  - Alert and acknowledgement details
+  - **Full response body** (for JSON health checks and other responses)
+- **Expanded entries stay open** during live updates (no page reload needed!)
+- New entries appear at the top automatically
 - Stores up to 1000 check entries per target
 
 **🎯 Target Information:**
 - Current status badge (Healthy/Down/Acknowledged)
 - Target URL
 - Back button to navigate to target list
+
+**📊 Performance Statistics:**
+- **Average Page Size**: Mean response size across all successful checks
+  - Displays in appropriate units (bytes, KB, MB)
+  - Only counts successful responses
+- **P95 Response Time**: 95th percentile response time
+  - Shows worst-case performance for 95% of requests
+  - Displayed in seconds with up to 3 significant digits
+  - Excludes failed checks
+- **Total Checks**: Complete history count
+  - Tracks all checks performed (up to 1000 entries)
+
+**💡 Response Body Capture & Live Updates:**
+- Automatically captures response bodies for all checks (up to 10KB per response)
+- Especially useful for JSON health endpoints (e.g., `/health`, `/healthcheck`)
+- View full response by clicking on any log entry to expand it
+- Response bodies are stored with each check in the history
+- **All data streams live** - graph, stats, logs, and status update every 5 seconds
+- **No page reloads** - expanded entries stay open while data refreshes
 
 #### API Access
 
@@ -346,7 +376,9 @@ curl http://localhost:8080/api/history/api-health
       "AlertSent": false,
       "AlertCount": 0,
       "WasAcked": false,
-      "WasRecovered": false
+      "WasRecovered": false,
+      "ContentType": "application/json",
+      "ResponseBody": "{\"status\":\"healthy\",\"uptime\":123456}"
     }
   ],
   "count": 150

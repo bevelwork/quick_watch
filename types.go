@@ -122,6 +122,8 @@ type CheckHistoryEntry struct {
 	AlertCount   int // Number of alerts sent for this failure sequence
 	WasAcked     bool
 	WasRecovered bool
+	ContentType  string // Content-Type header value
+	ResponseBody string // Response body (limited to first 10KB for JSON responses)
 }
 
 // TargetState represents the current state of a target
@@ -409,6 +411,8 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 		AlertCount:   state.FailureCount,
 		WasAcked:     state.AcknowledgedAt != nil,
 		WasRecovered: false,
+		ContentType:  result.ContentType,
+		ResponseBody: result.ResponseBody,
 	}
 
 	// Check for size changes if enabled and we have a response size

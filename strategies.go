@@ -31,6 +31,8 @@ type CheckResult struct {
 	Error        string        `json:"error,omitempty"`
 	Timestamp    time.Time     `json:"timestamp"`
 	AlertCount   int           `json:"alert_count,omitempty"` // Number of alerts sent for this incident (for exponential backoff display)
+	ContentType  string        `json:"content_type,omitempty"`
+	ResponseBody string        `json:"response_body,omitempty"` // Response body (limited for JSON)
 }
 
 // CheckStrategy defines the interface for health check strategies
@@ -192,11 +194,25 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRe
 	}
 	defer resp.Body.Close()
 
-	// Read response body to get size
+	// Get Content-Type header
+	contentType := resp.Header.Get("Content-Type")
+
+	// Read response body to get size and capture JSON responses
 	var responseSize int64
+	var responseBody string
 	if resp.Body != nil {
-		// We'll estimate size from Content-Length header
-		responseSize = max(0, resp.ContentLength)
+		// Read body (limit to 10KB for JSON responses to avoid memory issues)
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024))
+		if err == nil {
+			responseSize = int64(len(bodyBytes))
+			// Only capture body for JSON responses
+			if strings.Contains(contentType, "application/json") {
+				responseBody = string(bodyBytes)
+			}
+		} else {
+			// If we can't read the body, estimate from Content-Length
+			responseSize = max(0, resp.ContentLength)
+		}
 	}
 
 	// Check if status code matches allowed status codes
@@ -207,6 +223,8 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRe
 		StatusCode:   resp.StatusCode,
 		ResponseTime: responseTime,
 		ResponseSize: responseSize,
+		ContentType:  contentType,
+		ResponseBody: responseBody,
 		Timestamp:    start,
 	}, nil
 }

@@ -1972,6 +1972,85 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	// Get check history
 	history := state.GetCheckHistory()
 
+	// Calculate statistics
+	avgPageSize := 0.0
+	p95ResponseTime := 0.0
+	if len(history) > 0 {
+		// Calculate average page size
+		var totalSize int64
+		validSizeCount := 0
+		for _, entry := range history {
+			if entry.Success && entry.ResponseSize > 0 {
+				totalSize += entry.ResponseSize
+				validSizeCount++
+			}
+		}
+		if validSizeCount > 0 {
+			avgPageSize = float64(totalSize) / float64(validSizeCount)
+		}
+
+		// Calculate p95 response time
+		successfulTimes := []int64{}
+		for _, entry := range history {
+			if entry.Success {
+				successfulTimes = append(successfulTimes, entry.ResponseTime)
+			}
+		}
+		if len(successfulTimes) > 0 {
+			// Sort times to find p95
+			sortedTimes := make([]int64, len(successfulTimes))
+			copy(sortedTimes, successfulTimes)
+			for i := 0; i < len(sortedTimes); i++ {
+				for j := i + 1; j < len(sortedTimes); j++ {
+					if sortedTimes[i] > sortedTimes[j] {
+						sortedTimes[i], sortedTimes[j] = sortedTimes[j], sortedTimes[i]
+					}
+				}
+			}
+			p95Index := int(float64(len(sortedTimes)) * 0.95)
+			if p95Index >= len(sortedTimes) {
+				p95Index = len(sortedTimes) - 1
+			}
+			p95ResponseTime = float64(sortedTimes[p95Index]) / 1000.0 // Convert to seconds
+		}
+	}
+
+	// Format statistics for display
+	statsHTML := ""
+	if len(history) > 0 {
+		avgSizeStr := "N/A"
+		if avgPageSize > 0 {
+			if avgPageSize < 1024 {
+				avgSizeStr = fmt.Sprintf("%.0f bytes", avgPageSize)
+			} else if avgPageSize < 1024*1024 {
+				avgSizeStr = fmt.Sprintf("%.2f KB", avgPageSize/1024)
+			} else {
+				avgSizeStr = fmt.Sprintf("%.2f MB", avgPageSize/(1024*1024))
+			}
+		}
+
+		p95Str := "N/A"
+		if p95ResponseTime > 0 {
+			p95Str = fmt.Sprintf("%.3g", p95ResponseTime) + "s"
+		}
+
+		statsHTML = fmt.Sprintf(`
+		<div class="stats-container">
+			<div class="stat-card">
+				<div class="stat-label">Average Page Size</div>
+				<div class="stat-value">%s</div>
+			</div>
+			<div class="stat-card">
+				<div class="stat-label">P95 Response Time</div>
+				<div class="stat-value">%s</div>
+			</div>
+			<div class="stat-card">
+				<div class="stat-label">Total Checks</div>
+				<div class="stat-value">%d</div>
+			</div>
+		</div>`, avgSizeStr, p95Str, len(history))
+	}
+
 	// Build chart data (last 100 entries)
 	chartData := []map[string]any{}
 	logEntries := ""
@@ -1982,6 +2061,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		startIdx = historyLen - 100
 	}
 
+	// Build chart data in chronological order (for proper graph display)
 	for i := startIdx; i < historyLen; i++ {
 		entry := history[i]
 		chartData = append(chartData, map[string]any{
@@ -1989,8 +2069,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			"success":      entry.Success,
 			"responseTime": entry.ResponseTime,
 		})
+	}
 
-		// Build log entry (GitHub Actions style - most recent at bottom)
+	// Build log entries in reverse order (most recent at top)
+	entryID := 0
+	for i := historyLen - 1; i >= startIdx; i-- {
+		entry := history[i]
+
+		// Build log entry (most recent at top)
 		statusIcon := "✅"
 		statusClass := "success"
 		if !entry.Success {
@@ -2036,16 +2122,85 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			details += "Recovered"
 		}
 
-		logEntries += fmt.Sprintf(`<div class="log-entry %s">
-			<span class="log-timestamp">%s</span>
-			<span class="log-icon">%s</span>
-			<span class="log-status">%s</span>
-			<span class="log-details">%s</span>
-		</div>`, statusClass,
+		// Build expanded details section (always present, hidden by default)
+		entryID++
+		expandedContent := ""
+
+		// Add full details
+		expandedLines := []string{}
+		expandedLines = append(expandedLines, fmt.Sprintf("Timestamp: %s", entry.Timestamp.Format("2006-01-02 15:04:05 MST")))
+		if entry.StatusCode > 0 {
+			expandedLines = append(expandedLines, fmt.Sprintf("Status Code: %d", entry.StatusCode))
+		}
+		if entry.Success {
+			seconds := float64(entry.ResponseTime) / 1000.0
+			expandedLines = append(expandedLines, fmt.Sprintf("Response Time: %.3gs", seconds))
+		}
+		if entry.ResponseSize > 0 {
+			sizeStr := ""
+			if entry.ResponseSize < 1024 {
+				sizeStr = fmt.Sprintf("%d bytes", entry.ResponseSize)
+			} else if entry.ResponseSize < 1024*1024 {
+				sizeStr = fmt.Sprintf("%.2f KB", float64(entry.ResponseSize)/1024)
+			} else {
+				sizeStr = fmt.Sprintf("%.2f MB", float64(entry.ResponseSize)/(1024*1024))
+			}
+			expandedLines = append(expandedLines, fmt.Sprintf("Response Size: %s", sizeStr))
+		}
+		if entry.ContentType != "" {
+			expandedLines = append(expandedLines, fmt.Sprintf("Content-Type: %s", entry.ContentType))
+		}
+		if entry.ErrorMessage != "" {
+			expandedLines = append(expandedLines, fmt.Sprintf("Error: %s", entry.ErrorMessage))
+		}
+		if entry.AlertSent {
+			expandedLines = append(expandedLines, fmt.Sprintf("Alert Sent: Yes (Alert #%d)", entry.AlertCount))
+		}
+		if entry.WasAcked {
+			expandedLines = append(expandedLines, "Acknowledged: Yes")
+		}
+		if entry.WasRecovered {
+			expandedLines = append(expandedLines, "Status: Recovered")
+		}
+
+		// Add response body if present
+		if entry.ResponseBody != "" {
+			expandedLines = append(expandedLines, "")
+			expandedLines = append(expandedLines, "Response Body:")
+			// Escape response body for HTML display
+			escapedBody := strings.ReplaceAll(entry.ResponseBody, "&", "&amp;")
+			escapedBody = strings.ReplaceAll(escapedBody, "<", "&lt;")
+			escapedBody = strings.ReplaceAll(escapedBody, ">", "&gt;")
+			expandedContent = ""
+			for _, line := range expandedLines {
+				expandedContent += fmt.Sprintf("<div>%s</div>", line)
+			}
+			expandedContent += fmt.Sprintf("<pre>%s</pre>", escapedBody)
+		} else {
+			for _, line := range expandedLines {
+				expandedContent += fmt.Sprintf("<div>%s</div>", line)
+			}
+		}
+
+		// Create clickable log entry with expandable details
+		logEntries += fmt.Sprintf(`<div class="log-entry-wrapper">
+			<div class="log-entry %s" onclick="toggleEntry(%d)">
+				<span class="log-expand">▶</span>
+				<span class="log-timestamp">%s</span>
+				<span class="log-icon">%s</span>
+				<span class="log-status">%s</span>
+				<span class="log-details">%s</span>
+			</div>
+			<div id="entry-%d" class="entry-expanded" style="display:none;">
+				%s
+			</div>
+		</div>`, statusClass, entryID,
 			entry.Timestamp.Format("15:04:05"),
 			statusIcon,
 			statusText,
-			details)
+			details,
+			entryID,
+			expandedContent)
 	}
 
 	// Convert chart data to JSON
@@ -2170,11 +2325,20 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             overflow-y: auto;
             background: #0d1117;
         }
+        .log-entry-wrapper {
+            margin-bottom: 2px;
+        }
         .log-entry {
-            padding: 6px 0;
+            padding: 6px 8px;
             display: flex;
             gap: 12px;
             align-items: center;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.15s ease;
+        }
+        .log-entry:hover {
+            background: #161b22;
         }
         .log-entry.success {
             color: #3fb950;
@@ -2184,6 +2348,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         }
         .log-entry.recovered {
             color: #79c0ff;
+        }
+        .log-expand {
+            color: #8b949e;
+            font-size: 10px;
+            transition: transform 0.2s ease;
+            width: 12px;
+            display: inline-block;
+        }
+        .log-expand.expanded {
+            transform: rotate(90deg);
         }
         .log-timestamp {
             color: #8b949e;
@@ -2201,6 +2375,30 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             color: #8b949e;
             flex: 1;
         }
+        .entry-expanded {
+            background: #161b22;
+            border-left: 3px solid #30363d;
+            margin-left: 34px;
+            padding: 12px 16px;
+            font-size: 12px;
+            color: #c9d1d9;
+            line-height: 1.6;
+            border-radius: 0 4px 4px 0;
+        }
+        .entry-expanded div {
+            margin-bottom: 4px;
+        }
+        .entry-expanded pre {
+            margin-top: 8px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 12px;
+            overflow-x: auto;
+            color: #79c0ff;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
         .no-data {
             text-align: center;
             padding: 40px;
@@ -2208,6 +2406,30 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         }
         canvas {
             max-height: 360px;
+        }
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f0f6fc;
         }
     </style>
 </head>
@@ -2222,6 +2444,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         <div class="target-info">
             <div class="target-url">%s</div>
         </div>
+        
+        %s
         
         <div class="chart-container">
             <canvas id="responseChart"></canvas>
@@ -2318,6 +2542,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: false,
                 interaction: {
                     intersect: false,
                     mode: 'index'
@@ -2342,12 +2567,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                         callbacks: {
                             title: function(context) {
                                 const idx = context[0].dataIndex;
-                                const date = new Date(chartData[idx].timestamp);
+                                const data = window.chartData || chartData;
+                                const date = new Date(data[idx].timestamp);
                                 return date.toLocaleString();
                             },
                             label: function(context) {
                                 const idx = context.dataIndex;
-                                const entry = chartData[idx];
+                                const data = window.chartData || chartData;
+                                const entry = data[idx];
                                 let label = context.dataset.label || '';
                                 if (label) {
                                     label += ': ';
@@ -2402,15 +2629,272 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             }
         });
         
-        // Auto-refresh every 5 seconds
-        setTimeout(() => window.location.reload(), 5000);
+        // Track expanded entries
+        const expandedEntries = new Set();
         
-        // Scroll terminal to bottom
-        const terminal = document.querySelector('.terminal-body');
-        terminal.scrollTop = terminal.scrollHeight;
+        // Toggle entry expansion (like GitHub Actions)
+        function toggleEntry(id) {
+            const expandedDiv = document.getElementById('entry-' + id);
+            const expandIcon = event.currentTarget.querySelector('.log-expand');
+            
+            if (expandedDiv && expandIcon) {
+                if (expandedDiv.style.display === 'none') {
+                    expandedDiv.style.display = 'block';
+                    expandIcon.classList.add('expanded');
+                    expandedEntries.add(id);
+                } else {
+                    expandedDiv.style.display = 'none';
+                    expandIcon.classList.remove('expanded');
+                    expandedEntries.delete(id);
+                }
+            }
+        }
+        
+        // Auto-update data every 5 seconds without page reload
+        async function updateData() {
+            try {
+                const response = await fetch(window.location.pathname.replace('/targets/', '/api/history/'));
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const history = data.history || [];
+                
+                // Update status badge
+                const statusBadge = document.querySelector('.status-badge');
+                if (statusBadge && data.target) {
+                    if (data.target.is_down) {
+                        statusBadge.className = 'status-badge down';
+                        statusBadge.textContent = '❌ Down';
+                    } else {
+                        statusBadge.className = 'status-badge healthy';
+                        statusBadge.textContent = '✅ Healthy';
+                    }
+                }
+                
+                // Calculate and update statistics
+                updateStatistics(history);
+                
+                // Update chart
+                updateChart(history);
+                
+                // Update log entries
+                updateLogEntries(history);
+                
+            } catch (error) {
+                console.error('Failed to update data:', error);
+            }
+        }
+        
+        function updateStatistics(history) {
+            if (history.length === 0) return;
+            
+            // Calculate average page size
+            let totalSize = 0;
+            let validSizeCount = 0;
+            for (const entry of history) {
+                if (entry.Success && entry.ResponseSize > 0) {
+                    totalSize += entry.ResponseSize;
+                    validSizeCount++;
+                }
+            }
+            const avgPageSize = validSizeCount > 0 ? totalSize / validSizeCount : 0;
+            
+            // Calculate p95 response time
+            const successfulTimes = history.filter(e => e.Success).map(e => e.ResponseTime);
+            successfulTimes.sort((a, b) => a - b);
+            const p95Index = Math.floor(successfulTimes.length * 0.95);
+            const p95ResponseTime = successfulTimes.length > 0 ? successfulTimes[Math.min(p95Index, successfulTimes.length - 1)] / 1000.0 : 0;
+            
+            // Update stat values
+            const statCards = document.querySelectorAll('.stat-value');
+            if (statCards.length >= 3) {
+                // Average page size
+                let avgSizeStr = 'N/A';
+                if (avgPageSize > 0) {
+                    if (avgPageSize < 1024) {
+                        avgSizeStr = Math.floor(avgPageSize) + ' bytes';
+                    } else if (avgPageSize < 1024 * 1024) {
+                        avgSizeStr = (avgPageSize / 1024).toFixed(2) + ' KB';
+                    } else {
+                        avgSizeStr = (avgPageSize / (1024 * 1024)).toFixed(2) + ' MB';
+                    }
+                }
+                statCards[0].textContent = avgSizeStr;
+                
+                // P95 response time
+                const p95Str = p95ResponseTime > 0 ? parseFloat(p95ResponseTime.toPrecision(3)) + 's' : 'N/A';
+                statCards[1].textContent = p95Str;
+                
+                // Total checks
+                statCards[2].textContent = history.length.toString();
+            }
+        }
+        
+        function updateChart(history) {
+            const last100 = history.slice(-100);
+            const newData = last100.map(entry => ({
+                timestamp: new Date(entry.Timestamp).getTime(),
+                success: entry.Success,
+                responseTime: entry.ResponseTime
+            }));
+            
+            const newLabels = newData.map(d => {
+                const date = new Date(d.timestamp);
+                return date.toLocaleTimeString('en-US', { 
+                    hour: '2-digit', 
+                    minute: '2-digit', 
+                    second: '2-digit',
+                    hour12: false 
+                });
+            });
+            
+            chart.data.labels = newLabels;
+            chart.data.datasets[0].data = newData.map(d => d.success ? d.responseTime / 1000 : 0);
+            chart.data.datasets[0].pointBackgroundColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
+            chart.data.datasets[0].pointBorderColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
+            chart.data.datasets[0].pointHoverBackgroundColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
+            chart.data.datasets[0].segment = {
+                borderColor: ctx => {
+                    const idx = ctx.p0DataIndex;
+                    const p0Success = newData[idx]?.success;
+                    const p1Success = newData[idx + 1]?.success;
+                    if (!p0Success || !p1Success) return '#f85149';
+                    return '#3fb950';
+                }
+            };
+            chart.data.datasets[1].data = newData.map(d => !d.success ? 0 : null);
+            
+            // Store for tooltip callbacks
+            window.chartData = newData;
+            
+            chart.update();
+        }
+        
+        function updateLogEntries(history) {
+            const terminalBody = document.querySelector('.terminal-body');
+            if (!terminalBody) return;
+            
+            const last100 = history.slice(-100);
+            let newHTML = '';
+            
+            // Iterate in reverse order to show most recent at top
+            for (let i = last100.length - 1; i >= 0; i--) {
+                const entry = last100[i];
+                const entryID = i + 1;
+                
+                // Build log entry
+                let statusIcon = '✅';
+                let statusClass = 'success';
+                if (!entry.Success) {
+                    statusIcon = '❌';
+                    statusClass = 'error';
+                }
+                if (entry.WasRecovered) {
+                    statusIcon = '🔄';
+                    statusClass = 'recovered';
+                }
+                if (entry.WasAcked) {
+                    statusIcon = '🔔';
+                }
+                
+                let statusText = '';
+                if (entry.Success) {
+                    const seconds = entry.ResponseTime / 1000.0;
+                    if (seconds === 0) {
+                        statusText = 'OK - 0s';
+                    } else {
+                        statusText = 'OK - ' + parseFloat(seconds.toPrecision(3)) + 's';
+                    }
+                } else {
+                    statusText = 'FAILED';
+                }
+                
+                let details = '';
+                if (entry.StatusCode > 0) details += 'HTTP ' + entry.StatusCode + ' ';
+                if (entry.ErrorMessage) details += entry.ErrorMessage + ' ';
+                if (entry.AlertSent) details += 'Alert #' + entry.AlertCount + ' sent ';
+                if (entry.WasAcked) details += 'Acknowledged ';
+                if (entry.WasRecovered) details += 'Recovered';
+                
+                // Build expanded content
+                let expandedLines = [];
+                const timestamp = new Date(entry.Timestamp);
+                expandedLines.push('Timestamp: ' + timestamp.toLocaleString() + ' ' + timestamp.toString().match(/\(([^)]+)\)$/)?.[1] || '');
+                if (entry.StatusCode > 0) expandedLines.push('Status Code: ' + entry.StatusCode);
+                if (entry.Success) {
+                    const seconds = entry.ResponseTime / 1000.0;
+                    expandedLines.push('Response Time: ' + parseFloat(seconds.toPrecision(3)) + 's');
+                }
+                if (entry.ResponseSize > 0) {
+                    let sizeStr = '';
+                    if (entry.ResponseSize < 1024) {
+                        sizeStr = entry.ResponseSize + ' bytes';
+                    } else if (entry.ResponseSize < 1024 * 1024) {
+                        sizeStr = (entry.ResponseSize / 1024).toFixed(2) + ' KB';
+                    } else {
+                        sizeStr = (entry.ResponseSize / (1024 * 1024)).toFixed(2) + ' MB';
+                    }
+                    expandedLines.push('Response Size: ' + sizeStr);
+                }
+                if (entry.ContentType) expandedLines.push('Content-Type: ' + entry.ContentType);
+                if (entry.ErrorMessage) expandedLines.push('Error: ' + entry.ErrorMessage);
+                if (entry.AlertSent) expandedLines.push('Alert Sent: Yes (Alert #' + entry.AlertCount + ')');
+                if (entry.WasAcked) expandedLines.push('Acknowledged: Yes');
+                if (entry.WasRecovered) expandedLines.push('Status: Recovered');
+                
+                let expandedContent = '';
+                if (entry.ResponseBody) {
+                    expandedLines.push('');
+                    expandedLines.push('Response Body:');
+                    for (const line of expandedLines) {
+                        expandedContent += '<div>' + escapeHtml(line) + '</div>';
+                    }
+                    expandedContent += '<pre>' + escapeHtml(entry.ResponseBody) + '</pre>';
+                } else {
+                    for (const line of expandedLines) {
+                        expandedContent += '<div>' + escapeHtml(line) + '</div>';
+                    }
+                }
+                
+                const isExpanded = expandedEntries.has(entryID);
+                const expandClass = isExpanded ? ' expanded' : '';
+                const displayStyle = isExpanded ? 'block' : 'none';
+                
+                const entryTime = timestamp.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                
+                newHTML += '<div class="log-entry-wrapper">';
+                newHTML += '<div class="log-entry ' + statusClass + '" onclick="toggleEntry(' + entryID + ')">';
+                newHTML += '<span class="log-expand' + expandClass + '">▶</span>';
+                newHTML += '<span class="log-timestamp">' + entryTime + '</span>';
+                newHTML += '<span class="log-icon">' + statusIcon + '</span>';
+                newHTML += '<span class="log-status">' + statusText + '</span>';
+                newHTML += '<span class="log-details">' + escapeHtml(details) + '</span>';
+                newHTML += '</div>';
+                newHTML += '<div id="entry-' + entryID + '" class="entry-expanded" style="display:' + displayStyle + ';">';
+                newHTML += expandedContent;
+                newHTML += '</div>';
+                newHTML += '</div>';
+            }
+            
+            if (newHTML) {
+                terminalBody.innerHTML = newHTML;
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Make chartData global for tooltip callbacks
+        window.chartData = chartData;
+        
+        // Start auto-update
+        setInterval(updateData, 5000);
     </script>
 </body>
-</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, logEntries, noDataMsg, string(chartDataJSON))
+</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, statsHTML, logEntries, noDataMsg, string(chartDataJSON))
 
 	w.Write([]byte(html))
 }
