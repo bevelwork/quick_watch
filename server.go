@@ -204,7 +204,7 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 			}
 
 			// Build notification from request
-			body := map[string]interface{}{}
+			body := map[string]any{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 
 			// Resolve message precedence: URL param 'msg' > body.msg > hook default
@@ -319,15 +319,15 @@ func (s *Server) handleWebhookStatus(wr http.ResponseWriter, r *http.Request) {
 	wr.WriteHeader(http.StatusOK)
 
 	targets := s.engine.GetTargetStatus()
-	status := map[string]interface{}{
+	status := map[string]any{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
-		"targets":   make([]map[string]interface{}, len(targets)),
+		"targets":   make([]map[string]any, len(targets)),
 	}
 
-	targetList := status["targets"].([]map[string]interface{})
+	targetList := status["targets"].([]map[string]any)
 	for i, state := range targets {
-		targetList[i] = map[string]interface{}{
+		targetList[i] = map[string]any{
 			"name":       state.Target.Name,
 			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
@@ -389,7 +389,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
@@ -418,16 +418,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	targets := s.engine.GetTargetStatus()
-	status := map[string]interface{}{
+	status := map[string]any{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
 		"state":     s.state,
-		"targets":   make([]map[string]interface{}, len(targets)),
+		"targets":   make([]map[string]any, len(targets)),
 	}
 
-	targetList := status["targets"].([]map[string]interface{})
+	targetList := status["targets"].([]map[string]any)
 	for i, state := range targets {
-		targetList[i] = map[string]interface{}{
+		targetList[i] = map[string]any{
 			"name":       state.Target.Name,
 			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
@@ -464,7 +464,7 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListTargets lists all targets
-func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -640,7 +640,7 @@ func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status":  "triggered",
 		"target":  state.Target.Name,
 		"message": message,
@@ -1335,10 +1335,10 @@ func (s *Server) handleTriggerStatusReport(w http.ResponseWriter, r *http.Reques
 	if r.Method == http.MethodGet {
 		s.showStatusReportSuccess(w, activeCount, settings.StatusReport.Alerts)
 	} else {
-		response := map[string]interface{}{
+		response := map[string]any{
 			"status":  "success",
 			"message": "Status report generated and sent",
-			"summary": map[string]interface{}{
+			"summary": map[string]any{
 				"active_outages": activeCount,
 				"sent_to":        settings.StatusReport.Alerts,
 			},
@@ -1855,7 +1855,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	history := state.GetCheckHistory()
 
 	// Build chart data (last 100 entries)
-	chartData := []map[string]interface{}{}
+	chartData := []map[string]any{}
 	logEntries := ""
 
 	historyLen := len(history)
@@ -1866,7 +1866,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 
 	for i := startIdx; i < historyLen; i++ {
 		entry := history[i]
-		chartData = append(chartData, map[string]interface{}{
+		chartData = append(chartData, map[string]any{
 			"timestamp":    entry.Timestamp.Unix() * 1000, // milliseconds for Chart.js
 			"success":      entry.Success,
 			"responseTime": entry.ResponseTime,
@@ -2320,8 +2320,8 @@ func (s *Server) handleTargetHistoryAPI(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]interface{}{
-		"target": map[string]interface{}{
+	response := map[string]any{
+		"target": map[string]any{
 			"name":     state.Target.Name,
 			"url":      state.Target.URL,
 			"is_down":  state.IsDown,

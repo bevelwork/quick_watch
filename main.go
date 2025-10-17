@@ -105,7 +105,7 @@ func showHelp() {
 func handleEditCommand(args []string) {
 	stateFile := getStateFile(args)
 	// Support reading from stdin
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		if args[i] == "--stdin" {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
@@ -340,105 +340,6 @@ type TargetFields struct {
 	SizeAlerts    bool
 	CheckStrategy bool
 	Alerts        bool
-}
-
-// cleanAllDefaults removes all default values from target configuration (for temp file creation)
-func cleanAllDefaults(target *Target) {
-	appliedDefaults := []string{}
-
-	// Check and clean method
-	if target.Method == "GET" {
-		target.Method = ""
-		appliedDefaults = append(appliedDefaults, "method: GET")
-	}
-
-	// Check and clean headers
-	if len(target.Headers) == 0 {
-		target.Headers = nil
-		appliedDefaults = append(appliedDefaults, "headers: {}")
-	}
-
-	// Check and clean threshold
-	if target.Threshold == 30 {
-		target.Threshold = 0
-		appliedDefaults = append(appliedDefaults, "threshold: 30s")
-	}
-
-	// Check and clean status codes
-	if len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
-		target.StatusCodes = nil
-		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
-	}
-
-	// Check and clean size alerts
-	if target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
-		target.SizeAlerts = SizeAlertConfig{}
-		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
-	}
-
-	// Check and clean check strategy
-	if target.CheckStrategy == "http" {
-		target.CheckStrategy = ""
-		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Show INFO message if any defaults were applied
-	if len(appliedDefaults) > 0 {
-		fmt.Printf("%s Applied defaults for %s: %s\n",
-			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			target.Name,
-			strings.Join(appliedDefaults, ", "))
-	}
-}
-
-// cleanDefaults removes default values from target configuration and shows INFO messages
-// It only cleans fields that were explicitly set to default values
-func cleanDefaults(target *Target, fields *TargetFields) {
-	appliedDefaults := []string{}
-
-	// Check and clean method (only if it was explicitly set)
-	if fields.Method && target.Method == "GET" {
-		target.Method = ""
-		appliedDefaults = append(appliedDefaults, "method: GET")
-	}
-
-	// Check and clean headers (only if it was explicitly set)
-	if fields.Headers && len(target.Headers) == 0 {
-		target.Headers = nil
-		appliedDefaults = append(appliedDefaults, "headers: {}")
-	}
-
-	// Check and clean threshold (only if it was explicitly set)
-	if fields.Threshold && target.Threshold == 30 {
-		target.Threshold = 0
-		appliedDefaults = append(appliedDefaults, "threshold: 30s")
-	}
-
-	// Check and clean status codes (only if it was explicitly set)
-	if fields.StatusCodes && len(target.StatusCodes) == 1 && target.StatusCodes[0] == "*" {
-		target.StatusCodes = nil
-		appliedDefaults = append(appliedDefaults, "status_codes: [\"*\"]")
-	}
-
-	// Check and clean size alerts (only if it was explicitly set)
-	if fields.SizeAlerts && target.SizeAlerts.Enabled && target.SizeAlerts.HistorySize == 100 && target.SizeAlerts.Threshold == 0.5 {
-		target.SizeAlerts = SizeAlertConfig{}
-		appliedDefaults = append(appliedDefaults, "size_alerts: {enabled: true, history_size: 100, threshold: 0.5}")
-	}
-
-	// Check and clean check strategy (only if it was explicitly set)
-	if fields.CheckStrategy && target.CheckStrategy == "http" {
-		target.CheckStrategy = ""
-		appliedDefaults = append(appliedDefaults, "check_strategy: http")
-	}
-
-	// Show INFO message if any defaults were applied
-	if len(appliedDefaults) > 0 {
-		fmt.Printf("%s Applied defaults for %s: %s\n",
-			qc.Colorize("ℹ️ INFO:", qc.ColorCyan),
-			target.Name,
-			strings.Join(appliedDefaults, ", "))
-	}
 }
 
 // applyDefaultsAfterClean applies default values after cleaning
@@ -717,7 +618,7 @@ func handleSettingsCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		if args[i] == "--stdin" {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
@@ -774,7 +675,7 @@ func handleNotifiersCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := 0; i < len(args); i++ {
+	for i := range args {
 		if args[i] == "--stdin" {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {

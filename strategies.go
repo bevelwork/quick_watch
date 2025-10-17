@@ -196,10 +196,7 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRe
 	var responseSize int64
 	if resp.Body != nil {
 		// We'll estimate size from Content-Length header
-		responseSize = resp.ContentLength
-		if responseSize < 0 {
-			responseSize = 0 // Unknown size
-		}
+		responseSize = max(0, resp.ContentLength)
 	}
 
 	// Check if status code matches allowed status codes
@@ -476,7 +473,7 @@ func NewWebhookAlertStrategy(webhookURL string) *WebhookAlertStrategy {
 
 // SendAlert sends an alert via webhook
 func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"type":          "alert",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -491,7 +488,7 @@ func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, re
 
 // SendAllClear sends an all-clear notification via webhook
 func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"type":          "all_clear",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -504,7 +501,7 @@ func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target,
 }
 
 // sendWebhook sends a webhook notification
-func (w *WebhookAlertStrategy) sendWebhook(ctx context.Context, payload map[string]interface{}) error {
+func (w *WebhookAlertStrategy) sendWebhook(_ context.Context, payload map[string]any) error {
 	// This is a simplified implementation
 	// In a real implementation, you'd marshal the payload to JSON and send it
 	fmt.Printf("%s Sending notification to %s\n", qc.Colorize("📡 WEBHOOK:", qc.ColorBlue), w.webhookURL)
@@ -519,7 +516,7 @@ func (w *WebhookAlertStrategy) Name() string {
 
 // SendStatusReport sends a status report via webhook
 func (w *WebhookAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"type":               "status_report",
 		"active_outages":     len(report.ActiveOutages),
 		"resolved_outages":   len(report.ResolvedOutages),
@@ -565,14 +562,14 @@ func (s *SlackAlertStrategy) SendAlert(ctx context.Context, target *Target, resu
 	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "danger",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -613,14 +610,14 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 	message := fmt.Sprintf("✅ *%s* is UP\n• URL: %s\n• Status: %d\n• Time: %v",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -657,7 +654,7 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 }
 
 // sendSlackWebhook sends a notification to Slack
-func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]interface{}) error {
+func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]any) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal Slack payload: %v", err)
@@ -706,14 +703,14 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Targets: %d\n• Timestamp: %s",
 		version, targetCount, time.Now().Format("2006-01-02 15:04:05"))
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Service",
 						"value": "*Quick Watch*",
@@ -758,14 +755,14 @@ func (s *SlackAlertStrategy) SendAlertWithAck(ctx context.Context, target *Targe
 	message := fmt.Sprintf("%s\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
 		title, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "danger",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -821,14 +818,14 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 		message += fmt.Sprintf("\n• Note: %s", note)
 	}
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]interface{}{
+		"attachments": []map[string]any{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]interface{}{
+				"fields": []map[string]any{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -858,9 +855,9 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 
 	// Add contact info if provided
 	if contact != "" {
-		attachment := payload["attachments"].([]map[string]interface{})[0]
-		fields := attachment["fields"].([]map[string]interface{})
-		fields = append(fields, map[string]interface{}{
+		attachment := payload["attachments"].([]map[string]any)[0]
+		fields := attachment["fields"].([]map[string]any)
+		fields = append(fields, map[string]any{
 			"title": "Contact",
 			"value": contact,
 			"short": false,
@@ -870,9 +867,9 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 
 	// Add note if provided
 	if note != "" {
-		attachment := payload["attachments"].([]map[string]interface{})[0]
-		fields := attachment["fields"].([]map[string]interface{})
-		fields = append(fields, map[string]interface{}{
+		attachment := payload["attachments"].([]map[string]any)[0]
+		fields := attachment["fields"].([]map[string]any)
+		fields = append(fields, map[string]any{
 			"title": "Note",
 			"value": note,
 			"short": false,
@@ -931,7 +928,7 @@ func (s *SlackAlertStrategy) SendStatusReport(ctx context.Context, report *Statu
 	message.WriteString(fmt.Sprintf("• Alerts sent: %d\n", report.AlertsSent))
 	message.WriteString(fmt.Sprintf("• Notifications sent: %d\n", report.NotificationsSent))
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"text":   message.String(),
 		"mrkdwn": true,
 	}
@@ -1384,7 +1381,7 @@ func (e *EmailAlertStrategy) SendStatusReport(ctx context.Context, report *Statu
 
 	var body strings.Builder
 	body.WriteString("<html><body>")
-	body.WriteString(fmt.Sprintf("<h2 style=\"color:#1976d2\">📊 Status Report</h2>"))
+	body.WriteString("<h2 style=\"color:#1976d2\">📊 Status Report</h2>")
 	body.WriteString(fmt.Sprintf("<p><strong>Period:</strong> %s to %s (%v)</p>",
 		report.ReportPeriodStart.Format("15:04:05"),
 		report.ReportPeriodEnd.Format("15:04:05"),
@@ -1591,7 +1588,7 @@ func NewFileAlertStrategyWithRotation(filePath string, debug bool, maxSizeMB int
 
 // SendAlert sends a DOWN alert to the log file in OTEL-like JSON format
 func (f *FileAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":             result.Timestamp.Format(time.RFC3339Nano),
 		"level":                 "error",
 		"service.name":          "quick_watch",
@@ -1601,7 +1598,7 @@ func (f *FileAlertStrategy) SendAlert(ctx context.Context, target *Target, resul
 		"http.status_code":      result.StatusCode,
 		"http.response_time_ms": result.ResponseTime.Milliseconds(),
 		"error.message":         result.Error,
-		"attributes": map[string]interface{}{
+		"attributes": map[string]any{
 			"check_strategy": target.CheckStrategy,
 			"threshold":      target.Threshold,
 		},
@@ -1616,7 +1613,7 @@ func (f *FileAlertStrategy) SendAlert(ctx context.Context, target *Target, resul
 
 // SendAllClear sends an UP notification to the log file in OTEL-like JSON format
 func (f *FileAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":             result.Timestamp.Format(time.RFC3339Nano),
 		"level":                 "info",
 		"service.name":          "quick_watch",
@@ -1625,7 +1622,7 @@ func (f *FileAlertStrategy) SendAllClear(ctx context.Context, target *Target, re
 		"target.url":            target.URL,
 		"http.status_code":      result.StatusCode,
 		"http.response_time_ms": result.ResponseTime.Milliseconds(),
-		"attributes": map[string]interface{}{
+		"attributes": map[string]any{
 			"check_strategy": target.CheckStrategy,
 			"threshold":      target.Threshold,
 		},
@@ -1640,13 +1637,13 @@ func (f *FileAlertStrategy) SendAllClear(ctx context.Context, target *Target, re
 
 // SendStartupMessage sends a startup notification to the log file
 func (f *FileAlertStrategy) SendStartupMessage(ctx context.Context, version string, targetCount int) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":       time.Now().Format(time.RFC3339Nano),
 		"level":           "info",
 		"service.name":    "quick_watch",
 		"event.name":      "startup",
 		"service.version": version,
-		"attributes": map[string]interface{}{
+		"attributes": map[string]any{
 			"target_count": targetCount,
 		},
 	}
@@ -1664,7 +1661,7 @@ func (f *FileAlertStrategy) SendStartupMessage(ctx context.Context, version stri
 }
 
 // appendLogEntry appends a JSON log entry to the file
-func (f *FileAlertStrategy) appendLogEntry(entry map[string]interface{}) error {
+func (f *FileAlertStrategy) appendLogEntry(entry map[string]any) error {
 	// Check if rotation is needed (once per hour)
 	if err := f.checkAndRotate(); err != nil {
 		// Log error but don't fail the write
@@ -1845,7 +1842,7 @@ func (f *FileAlertStrategy) rotateAndCompress() error {
 
 // SendAlertWithAck sends a DOWN alert to the log file with acknowledgement URL
 func (f *FileAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target, result *CheckResult, ackURL string) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":             result.Timestamp.Format(time.RFC3339Nano),
 		"level":                 "error",
 		"service.name":          "quick_watch",
@@ -1857,7 +1854,7 @@ func (f *FileAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target
 		"http.response_time_ms": result.ResponseTime.Milliseconds(),
 		"error.message":         result.Error,
 		"acknowledgement_url":   ackURL,
-		"attributes": map[string]interface{}{
+		"attributes": map[string]any{
 			"check_strategy": target.CheckStrategy,
 			"threshold":      target.Threshold,
 		},
@@ -1872,7 +1869,7 @@ func (f *FileAlertStrategy) SendAlertWithAck(ctx context.Context, target *Target
 
 // SendAcknowledgement sends acknowledgement notification to the log file
 func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Target, acknowledgedBy, note, contact string) error {
-	attributes := map[string]interface{}{}
+	attributes := map[string]any{}
 	if note != "" {
 		attributes["note"] = note
 	}
@@ -1880,7 +1877,7 @@ func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Tar
 		attributes["contact"] = contact
 	}
 
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":       time.Now().Format(time.RFC3339Nano),
 		"level":           "info",
 		"service.name":    "quick_watch",
@@ -1912,12 +1909,12 @@ func (f *FileAlertStrategy) Name() string {
 func (f *FileAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
 	periodDuration := report.ReportPeriodEnd.Sub(report.ReportPeriodStart)
 
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":    time.Now().Format(time.RFC3339Nano),
 		"level":        "info",
 		"service.name": "quick_watch",
 		"event.type":   "status_report",
-		"report": map[string]interface{}{
+		"report": map[string]any{
 			"period_start":       report.ReportPeriodStart.Format(time.RFC3339),
 			"period_end":         report.ReportPeriodEnd.Format(time.RFC3339),
 			"period_duration":    periodDuration.String(),
@@ -1944,7 +1941,7 @@ func (f *FileAlertStrategy) SendStatusReport(ctx context.Context, report *Status
 
 // HandleNotification handles incoming notifications by logging to file
 func (f *FileAlertStrategy) HandleNotification(ctx context.Context, notification *WebhookNotification) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":    notification.Timestamp.Format(time.RFC3339Nano),
 		"level":        "info",
 		"service.name": "quick_watch",
@@ -1967,7 +1964,7 @@ func (f *FileAlertStrategy) HandleNotification(ctx context.Context, notification
 
 // HandleNotificationWithAck handles incoming notifications with acknowledgement link
 func (f *FileAlertStrategy) HandleNotificationWithAck(ctx context.Context, notification *WebhookNotification, ackURL string) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":           notification.Timestamp.Format(time.RFC3339Nano),
 		"level":               "info",
 		"service.name":        "quick_watch",
@@ -1991,7 +1988,7 @@ func (f *FileAlertStrategy) HandleNotificationWithAck(ctx context.Context, notif
 
 // SendNotificationAcknowledgement logs hook acknowledgement to file
 func (f *FileAlertStrategy) SendNotificationAcknowledgement(ctx context.Context, hookName, acknowledgedBy, note, contact string) error {
-	logEntry := map[string]interface{}{
+	logEntry := map[string]any{
 		"timestamp":       time.Now().Format(time.RFC3339Nano),
 		"level":           "info",
 		"service.name":    "quick_watch",
