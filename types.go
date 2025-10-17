@@ -143,6 +143,22 @@ type HookState struct {
 	AcknowledgementContact string
 }
 
+// StatusMetrics tracks metrics for status reports
+type StatusMetrics struct {
+	AlertsSent        int
+	NotificationsSent int
+	ResolvedOutages   []ResolvedOutage
+	LastReportTime    time.Time
+	mutex             sync.RWMutex
+}
+
+// ResolvedOutage represents an outage that was resolved
+type ResolvedOutage struct {
+	TargetName   string
+	ResolvedAt   time.Time
+	DownDuration time.Duration
+}
+
 type TargetEngine struct {
 	targets                []*TargetState
 	config                 *TargetConfig
@@ -154,6 +170,7 @@ type TargetEngine struct {
 	ackMutex               sync.RWMutex            // Protects ackTokenMap and hookAckTokenMap
 	serverAddress          string                  // Server address for generating acknowledgement URLs
 	acksEnabled            bool                    // Whether acknowledgements are enabled
+	metrics                *StatusMetrics          // Metrics for status reports
 }
 
 // NewTargetEngine creates a new targeting engine
@@ -165,6 +182,10 @@ func NewTargetEngine(config *TargetConfig, stateManager *StateManager) *TargetEn
 		notificationStrategies: make(map[string]NotificationStrategy),
 		ackTokenMap:            make(map[string]*TargetState),
 		hookAckTokenMap:        make(map[string]*HookState),
+		metrics: &StatusMetrics{
+			LastReportTime:  time.Now(),
+			ResolvedOutages: make([]ResolvedOutage, 0),
+		},
 	}
 
 	// Register default strategies
@@ -409,9 +430,27 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 				strat.SendAlert(ctx, state.Target, result)
 			}
 		}
+
+		// Track metric: alert sent
+		e.metrics.mutex.Lock()
+		e.metrics.AlertsSent++
+		e.metrics.mutex.Unlock()
 	} else if result.Success && wasDown {
 		// Just came back up - clear acknowledgement and reset counters
 		e.ClearAcknowledgement(state)
+
+		// Track resolved outage
+		if state.DownSince != nil {
+			downDuration := time.Since(*state.DownSince)
+			e.metrics.mutex.Lock()
+			e.metrics.ResolvedOutages = append(e.metrics.ResolvedOutages, ResolvedOutage{
+				TargetName:   state.Target.Name,
+				ResolvedAt:   time.Now(),
+				DownDuration: downDuration,
+			})
+			e.metrics.mutex.Unlock()
+		}
+
 		state.DownSince = nil
 		state.FailureCount = 0
 		state.LastAlertTime = nil
@@ -455,6 +494,11 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 						strat.SendAlert(ctx, state.Target, result)
 					}
 				}
+
+				// Track metric: alert sent
+				e.metrics.mutex.Lock()
+				e.metrics.AlertsSent++
+				e.metrics.mutex.Unlock()
 			}
 		}
 		// If acknowledged, don't send any more alerts until service recovers
@@ -675,4 +719,74 @@ func (e *TargetEngine) GetTargetByName(name string) *TargetState {
 		}
 	}
 	return nil
+}
+
+// StatusReportData contains data for generating status reports
+type StatusReportData struct {
+	ActiveOutages     []ActiveOutageInfo
+	ResolvedOutages   []ResolvedOutage
+	AlertsSent        int
+	NotificationsSent int
+	ReportPeriodStart time.Time
+	ReportPeriodEnd   time.Time
+}
+
+// ActiveOutageInfo contains information about an active outage
+type ActiveOutageInfo struct {
+	TargetName     string
+	TargetURL      string
+	DownSince      time.Time
+	Duration       time.Duration
+	Acknowledged   bool
+	AcknowledgedBy string
+	AlertCount     int
+}
+
+// GenerateStatusReport generates a status report for the given time period
+func (e *TargetEngine) GenerateStatusReport() *StatusReportData {
+	e.metrics.mutex.Lock()
+	defer e.metrics.mutex.Unlock()
+
+	now := time.Now()
+	report := &StatusReportData{
+		ActiveOutages:     make([]ActiveOutageInfo, 0),
+		ResolvedOutages:   make([]ResolvedOutage, 0),
+		AlertsSent:        e.metrics.AlertsSent,
+		NotificationsSent: e.metrics.NotificationsSent,
+		ReportPeriodStart: e.metrics.LastReportTime,
+		ReportPeriodEnd:   now,
+	}
+
+	// Collect active outages
+	for _, state := range e.targets {
+		if state.IsDown && state.DownSince != nil {
+			outage := ActiveOutageInfo{
+				TargetName:   state.Target.Name,
+				TargetURL:    state.Target.URL,
+				DownSince:    *state.DownSince,
+				Duration:     time.Since(*state.DownSince),
+				Acknowledged: state.AcknowledgedAt != nil,
+				AlertCount:   state.FailureCount,
+			}
+			if state.AcknowledgedBy != "" {
+				outage.AcknowledgedBy = state.AcknowledgedBy
+			}
+			report.ActiveOutages = append(report.ActiveOutages, outage)
+		}
+	}
+
+	// Filter resolved outages to only those since last report
+	for _, resolved := range e.metrics.ResolvedOutages {
+		if resolved.ResolvedAt.After(e.metrics.LastReportTime) {
+			report.ResolvedOutages = append(report.ResolvedOutages, resolved)
+		}
+	}
+
+	// Reset metrics for next period
+	e.metrics.AlertsSent = 0
+	e.metrics.NotificationsSent = 0
+	e.metrics.ResolvedOutages = make([]ResolvedOutage, 0)
+	e.metrics.LastReportTime = now
+
+	return report
 }

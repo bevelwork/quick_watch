@@ -775,6 +775,24 @@ func editSettings(stateManager *StateManager) {
 		}
 	}
 
+	// Parse status report configuration
+	if statusReportData, ok := settingsData["status_report"].(map[string]interface{}); ok {
+		if enabled, ok := statusReportData["enabled"].(bool); ok {
+			settings.StatusReport.Enabled = enabled
+		}
+		if interval, ok := statusReportData["interval"].(int); ok {
+			settings.StatusReport.Interval = interval
+		}
+		if alerts, ok := statusReportData["alerts"].([]interface{}); ok {
+			settings.StatusReport.Alerts = make([]string, 0, len(alerts))
+			for _, alert := range alerts {
+				if alertStr, ok := alert.(string); ok {
+					settings.StatusReport.Alerts = append(settings.StatusReport.Alerts, alertStr)
+				}
+			}
+		}
+	}
+
 	// Validate settings
 	if err := validateSettings(settings); err != nil {
 		fmt.Printf("%s Invalid settings: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
@@ -816,6 +834,11 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 			"alerts":            settings.Startup.Alerts,
 			"check_all_targets": settings.Startup.CheckAllTargets,
 		},
+		"status_report": map[string]interface{}{
+			"enabled":  settings.StatusReport.Enabled,
+			"interval": settings.StatusReport.Interval,
+			"alerts":   settings.StatusReport.Alerts,
+		},
 	}
 
 	// Marshal to YAML
@@ -852,6 +875,10 @@ func addSettingsComments(data []byte) []byte {
 		{2, "enabled: true/false", "(default: true)"},
 		{2, "alerts: [\"console\", \"slack-alerts\"]", "(default: [\"console\"])"},
 		{2, "check_all_targets: true/false", "(default: false)"},
+		{0, "status_report:", ""},
+		{2, "enabled: true/false", "(default: false)"},
+		{2, "interval: 60", "(minutes, default: 60)"},
+		{2, "alerts: [\"console\", \"slack-alerts\"]", "(default: [])"},
 		{0, "", ""},
 		{0, "", ""},
 	})
@@ -1299,6 +1326,23 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 		settings.Startup.Enabled = v
 		if v && len(settings.Startup.Alerts) == 0 {
 			settings.Startup.Alerts = []string{"console"}
+		}
+	}
+	// Parse status report configuration
+	if statusReportData, ok := settingsData["status_report"].(map[string]interface{}); ok {
+		if v, ok := statusReportData["enabled"].(bool); ok {
+			settings.StatusReport.Enabled = v
+		}
+		if v, ok := statusReportData["interval"].(int); ok {
+			settings.StatusReport.Interval = v
+		}
+		if alerts, ok := statusReportData["alerts"].([]interface{}); ok {
+			settings.StatusReport.Alerts = make([]string, 0, len(alerts))
+			for _, alert := range alerts {
+				if alertStr, ok := alert.(string); ok {
+					settings.StatusReport.Alerts = append(settings.StatusReport.Alerts, alertStr)
+				}
+			}
 		}
 	}
 	if err := validateSettings(settings); err != nil {

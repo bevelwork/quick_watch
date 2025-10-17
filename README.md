@@ -10,6 +10,7 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 - **Threshold-Based Alerting**: Configure how long a service can be down before firing alerts
 - **Exponential Backoff Alerts**: Intelligent alert throttling with exponential backoff (5s, 10s, 20s, 40s, etc.) to prevent alert fatigue
 - **Alert Acknowledgements**: Acknowledge alerts to stop repeated notifications while investigating issues
+- **Status Reports**: Periodic summaries (hourly by default) showing active/resolved outages and metrics
 - **All-Clear Notifications**: Automatically notify when services recover
 - **Webhook Support**: Receive external notifications and handle them with configurable strategies
 - **Strategy Pattern**: Pluggable strategies for checks, alerts, and notifications
@@ -147,6 +148,85 @@ Acknowledgement URL: https://monitor.example.com:8080/api/acknowledge/abc123
 - **Cloud deployment**: `server_address: "https://monitor.example.com:8080"`
 - **Docker with port mapping**: `server_address: "http://your-server-ip:9000"`
 - **Local testing**: Omit `server_address` to use `http://localhost:PORT`
+
+### Status Reports
+
+Get periodic summaries of your system's health and activity:
+
+```yaml
+settings:
+  status_report:
+    enabled: true
+    interval: 60  # minutes
+    alerts: ["console", "slack"]
+```
+
+Each status report includes:
+- **Active outages**: Currently down targets with duration and acknowledgement status
+- **Resolved outages**: Targets that recovered since the last report
+- **Metrics**: Number of alerts and notifications sent during the period
+
+**Example console output:**
+```
+📊 STATUS REPORT (14:00:00 to 15:00:00)
+
+Active Outages:
+  • api-service - down for 45m (acknowledged by john)
+  • database - down for 2m
+
+Resolved Outages:
+  • cache-server - was down for 5m
+
+Metrics:
+  • Alerts sent: 12
+  • Notifications sent: 25
+```
+
+**Configuration options:**
+- `enabled`: Enable/disable status reports (default: `false`)
+- `interval`: How often to send reports in minutes (default: `60`)
+- `alerts`: List of alert strategies to send reports to (e.g., `["console", "slack", "email"]`)
+
+#### Manual Status Report Trigger
+
+You can trigger a status report on-demand via webhook or browser:
+
+**Browser (GET):**
+Simply visit the URL in your browser:
+```
+http://localhost:8080/trigger/status_report
+```
+You'll see a nice HTML page confirming the report was sent.
+
+**API/Script (POST):**
+```bash
+curl -X POST http://localhost:8080/trigger/status_report
+```
+
+**API Response (JSON):**
+```json
+{
+  "status": "success",
+  "message": "Status report generated and sent",
+  "summary": {
+    "active_outages": 2,
+    "sent_to": ["console", "slack"]
+  }
+}
+```
+
+**Use cases:**
+- **Browser**: Quick manual trigger with visual feedback
+- **Bookmarks**: Save the URL for one-click status reports
+- **CI/CD pipelines**: POST to trigger reports after deployments
+- **Monitoring dashboards**: Add a "Generate Report" button
+- **Scripts**: Automate report generation
+- **External systems**: Integrate with other monitoring tools
+
+**Requirements:**
+- Status reports must be enabled in settings (`status_report.enabled: true`)
+- At least one alert strategy must be configured (`status_report.alerts`)
+- Both GET and POST methods are accepted
 
 ## Strategy Patterns
 

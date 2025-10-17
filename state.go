@@ -30,13 +30,14 @@ type WatchState struct {
 
 // ServerSettings represents server configuration
 type ServerSettings struct {
-	WebhookPort             int           `yaml:"webhook_port"`
-	WebhookPath             string        `yaml:"webhook_path"`
-	ServerAddress           string        `yaml:"server_address,omitempty"` // public-facing server address for URLs (e.g., "https://monitor.example.com:8080")
-	CheckInterval           int           `yaml:"check_interval"`           // seconds (default: 5s)
-	DefaultThreshold        int           `yaml:"default_threshold"`        // seconds (default: 30s)
-	Startup                 StartupConfig `yaml:"startup"`                  // startup message configuration
-	AcknowledgementsEnabled bool          `yaml:"acknowledgements_enabled"` // enable alert acknowledgements
+	WebhookPort             int                `yaml:"webhook_port"`
+	WebhookPath             string             `yaml:"webhook_path"`
+	ServerAddress           string             `yaml:"server_address,omitempty"` // public-facing server address for URLs (e.g., "https://monitor.example.com:8080")
+	CheckInterval           int                `yaml:"check_interval"`           // seconds (default: 5s)
+	DefaultThreshold        int                `yaml:"default_threshold"`        // seconds (default: 30s)
+	Startup                 StartupConfig      `yaml:"startup"`                  // startup message configuration
+	AcknowledgementsEnabled bool               `yaml:"acknowledgements_enabled"` // enable alert acknowledgements
+	StatusReport            StatusReportConfig `yaml:"status_report,omitempty"`  // periodic status report configuration
 }
 
 // StartupConfig represents startup message configuration
@@ -44,6 +45,13 @@ type StartupConfig struct {
 	Enabled         bool     `yaml:"enabled"`           // enable startup messages
 	Alerts          []string `yaml:"alerts"`            // list of alert strategies to use
 	CheckAllTargets bool     `yaml:"check_all_targets"` // check all targets on startup
+}
+
+// StatusReportConfig represents periodic status report configuration
+type StatusReportConfig struct {
+	Enabled  bool     `yaml:"enabled"`  // enable periodic status reports
+	Interval int      `yaml:"interval"` // interval in minutes (default: 60)
+	Alerts   []string `yaml:"alerts"`   // list of alert strategies to send reports to
 }
 
 // NewStateManager creates a new state manager

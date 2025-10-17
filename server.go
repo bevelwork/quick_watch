@@ -66,6 +66,11 @@ func (s *Server) Start(ctx context.Context) error {
 		s.sendStartupMessage(ctx)
 	}
 
+	// Start status report ticker if enabled
+	if settings.StatusReport.Enabled {
+		s.startStatusReportTicker(ctx, settings.StatusReport)
+	}
+
 	// Set up unified HTTP server with all routes
 	mux := http.NewServeMux()
 
@@ -87,6 +92,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/acknowledge/", s.handleAcknowledge)
 	mux.HandleFunc("/api/trigger/", s.handleTrigger)
+
+	// Trigger endpoints
+	mux.HandleFunc("/trigger/status_report", s.handleTriggerStatusReport)
 
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
@@ -244,10 +252,20 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 					if ackSender, ok := strat.(AcknowledgementAwareNotification); ok && ackURL != "" {
 						if err := ackSender.HandleNotificationWithAck(r.Context(), notification, ackURL); err != nil {
 							log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+						} else {
+							// Track metric: notification sent
+							s.engine.metrics.mutex.Lock()
+							s.engine.metrics.NotificationsSent++
+							s.engine.metrics.mutex.Unlock()
 						}
 					} else {
 						if err := strat.HandleNotification(r.Context(), notification); err != nil {
 							log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+						} else {
+							// Track metric: notification sent
+							s.engine.metrics.mutex.Lock()
+							s.engine.metrics.NotificationsSent++
+							s.engine.metrics.mutex.Unlock()
 						}
 					}
 				}
@@ -1217,4 +1235,369 @@ func (s *Server) logHealthStatusToConsole(target *Target, result *CheckResult) {
 	} else {
 		log.Printf("❌ %s: DOWN - Error: %s", target.Name, result.Error)
 	}
+}
+
+// startStatusReportTicker starts a ticker to send periodic status reports
+func (s *Server) startStatusReportTicker(ctx context.Context, config StatusReportConfig) {
+	interval := config.Interval
+	if interval <= 0 {
+		interval = 60 // default to 60 minutes
+	}
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Minute)
+
+	log.Printf("📊 Status reports enabled: sending every %d minutes to %v", interval, config.Alerts)
+	log.Printf("   Manual trigger: POST %s/trigger/status_report", s.engine.serverAddress)
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				s.sendStatusReport(ctx, config.Alerts)
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// sendStatusReport generates and sends a status report
+func (s *Server) sendStatusReport(ctx context.Context, alertNames []string) {
+	// Generate the report
+	report := s.engine.GenerateStatusReport()
+
+	log.Printf("📊 Sending status report: %d active, %d resolved, %d alerts, %d notifications",
+		len(report.ActiveOutages), len(report.ResolvedOutages), report.AlertsSent, report.NotificationsSent)
+
+	// Send to each configured alert strategy
+	for _, alertName := range alertNames {
+		if strategy, exists := s.engine.alertStrategies[alertName]; exists {
+			if err := strategy.SendStatusReport(ctx, report); err != nil {
+				log.Printf("Failed to send status report to %s: %v", alertName, err)
+			}
+		} else {
+			log.Printf("Warning: Alert strategy '%s' not found for status report", alertName)
+		}
+	}
+}
+
+// handleTriggerStatusReport handles manual status report trigger requests
+func (s *Server) handleTriggerStatusReport(w http.ResponseWriter, r *http.Request) {
+	// Accept both GET and POST
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed. Use GET or POST to trigger a status report.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	settings := s.stateManager.GetSettings()
+
+	// Check if status reports are configured
+	if !settings.StatusReport.Enabled {
+		if r.Method == http.MethodGet {
+			s.showStatusReportError(w, "Status reports are not enabled in settings")
+		} else {
+			http.Error(w, "Status reports are not enabled in settings", http.StatusServiceUnavailable)
+		}
+		return
+	}
+
+	if len(settings.StatusReport.Alerts) == 0 {
+		if r.Method == http.MethodGet {
+			s.showStatusReportError(w, "No alert strategies configured for status reports")
+		} else {
+			http.Error(w, "No alert strategies configured for status reports", http.StatusBadRequest)
+		}
+		return
+	}
+
+	// Generate and send the status report
+	log.Printf("📊 Manual status report triggered via %s", r.Method)
+	s.sendStatusReport(r.Context(), settings.StatusReport.Alerts)
+
+	// Get a fresh report for the response (the previous one was consumed)
+	// We'll generate summary data from the current state
+	activeCount := 0
+	for _, state := range s.engine.targets {
+		if state.IsDown {
+			activeCount++
+		}
+	}
+
+	// Return HTML for GET, JSON for POST
+	if r.Method == http.MethodGet {
+		s.showStatusReportSuccess(w, activeCount, settings.StatusReport.Alerts)
+	} else {
+		response := map[string]interface{}{
+			"status":  "success",
+			"message": "Status report generated and sent",
+			"summary": map[string]interface{}{
+				"active_outages": activeCount,
+				"sent_to":        settings.StatusReport.Alerts,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	}
+
+	log.Printf("✅ Status report webhook completed successfully")
+}
+
+// showStatusReportSuccess displays HTML success page for status report trigger
+func (s *Server) showStatusReportSuccess(w http.ResponseWriter, activeOutages int, sentTo []string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	alertsList := ""
+	for _, alert := range sentTo {
+		alertsList += fmt.Sprintf("<li>%s</li>", alert)
+	}
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Status Report Triggered</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #1976d2 0%%, #1565c0 100%%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header .icon {
+            font-size: 72px;
+            margin-bottom: 15px;
+            animation: pulse 0.5s ease-in-out;
+        }
+        @keyframes pulse {
+            0%% { transform: scale(0.9); }
+            50%% { transform: scale(1.1); }
+            100%% { transform: scale(1); }
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 30px;
+        }
+        .success-badge {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            padding: 12px 20px;
+            border-radius: 6px;
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 20px;
+            border-left: 4px solid #4caf50;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .details h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .details p {
+            margin: 10px 0;
+            color: #555;
+        }
+        .details ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .details li {
+            padding: 8px;
+            background: white;
+            margin: 5px 0;
+            border-radius: 4px;
+            border-left: 3px solid #1976d2;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            color: #777;
+            font-size: 14px;
+        }
+        .back-button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #1976d2;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .back-button:hover {
+            background-color: #1565c0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">📊</div>
+            <h1>Status Report Triggered!</h1>
+            <p style="margin: 15px 0 0 0; opacity: 0.9; font-size: 16px;">Report has been generated and distributed</p>
+        </div>
+        <div class="content">
+            <div class="success-badge">
+                ✅ Status report successfully sent to all configured alert strategies
+            </div>
+            
+            <div class="details">
+                <h3>Report Summary</h3>
+                <p><strong>Active Outages:</strong> %d</p>
+                <p><strong>Sent to:</strong></p>
+                <ul>%s</ul>
+                <p><strong>Triggered at:</strong> %s</p>
+            </div>
+            
+            <div class="footer">
+                <p>The report has been distributed to all configured alert strategies.</p>
+                <p>Check your console, Slack, email, or other configured destinations for the full report.</p>
+                <a href="/" class="back-button">← Back to Home</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`, activeOutages, alertsList, time.Now().Format("2006-01-02 15:04:05 MST"))
+
+	w.Write([]byte(html))
+}
+
+// showStatusReportError displays HTML error page for status report trigger
+func (s *Server) showStatusReportError(w http.ResponseWriter, errorMessage string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Status Report Error</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #d32f2f 0%%, #c62828 100%%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header .icon {
+            font-size: 72px;
+            margin-bottom: 15px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 30px;
+        }
+        .error-message {
+            background-color: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #d32f2f;
+            margin-bottom: 20px;
+        }
+        .help {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #1976d2;
+        }
+        .help h3 {
+            margin-top: 0;
+            color: #1565c0;
+        }
+        .back-button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #1976d2;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .back-button:hover {
+            background-color: #1565c0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">⚠️</div>
+            <h1>Cannot Generate Report</h1>
+        </div>
+        <div class="content">
+            <div class="error-message">
+                <strong>Error:</strong> %s
+            </div>
+            
+            <div class="help">
+                <h3>How to fix this:</h3>
+                <ol>
+                    <li>Enable status reports in your configuration</li>
+                    <li>Configure at least one alert strategy</li>
+                    <li>Restart Quick Watch</li>
+                </ol>
+                <p><strong>Example configuration:</strong></p>
+                <pre style="background: white; padding: 10px; border-radius: 4px; overflow-x: auto;">settings:
+  status_report:
+    enabled: true
+    interval: 60
+    alerts: ["console", "slack"]</pre>
+            </div>
+            
+            <a href="/" class="back-button">← Back to Home</a>
+        </div>
+    </div>
+</body>
+</html>`, errorMessage)
+
+	w.Write([]byte(html))
 }

@@ -43,6 +43,7 @@ type CheckStrategy interface {
 type AlertStrategy interface {
 	SendAlert(ctx context.Context, target *Target, result *CheckResult) error
 	SendAllClear(ctx context.Context, target *Target, result *CheckResult) error
+	SendStatusReport(ctx context.Context, report *StatusReportData) error
 	Name() string
 }
 
@@ -406,6 +407,57 @@ func (c *ConsoleAlertStrategy) SendAcknowledgement(ctx context.Context, target *
 	return nil
 }
 
+// SendStatusReport sends a status report to the console
+func (c *ConsoleAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
+	title := c.format("📊 STATUS REPORT", qc.ColorBlue, true)
+	period := fmt.Sprintf("%s to %s",
+		report.ReportPeriodStart.Format("15:04:05"),
+		report.ReportPeriodEnd.Format("15:04:05"))
+	fmt.Printf("%s (%s)\n", title, period)
+	fmt.Println()
+
+	// Active outages
+	if len(report.ActiveOutages) > 0 {
+		fmt.Printf("%s\n", c.format("Active Outages:", qc.ColorRed, true))
+		for _, outage := range report.ActiveOutages {
+			ackStatus := ""
+			if outage.Acknowledged {
+				if outage.AcknowledgedBy != "" {
+					ackStatus = c.format(fmt.Sprintf(" (acknowledged by %s)", outage.AcknowledgedBy), qc.ColorYellow, false)
+				} else {
+					ackStatus = c.format(" (acknowledged)", qc.ColorYellow, false)
+				}
+			}
+			fmt.Printf("  • %s - down for %v%s\n",
+				c.format(outage.TargetName, qc.ColorRed, false),
+				outage.Duration.Round(time.Second),
+				ackStatus)
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("%s\n\n", c.format("✓ No active outages", qc.ColorGreen, false))
+	}
+
+	// Resolved outages
+	if len(report.ResolvedOutages) > 0 {
+		fmt.Printf("%s\n", c.format("Resolved Outages:", qc.ColorGreen, true))
+		for _, resolved := range report.ResolvedOutages {
+			fmt.Printf("  • %s - was down for %v\n",
+				c.format(resolved.TargetName, qc.ColorGreen, false),
+				resolved.DownDuration.Round(time.Second))
+		}
+		fmt.Println()
+	}
+
+	// Metrics
+	fmt.Printf("%s\n", c.format("Metrics:", qc.ColorCyan, true))
+	fmt.Printf("  • Alerts sent: %s\n", c.format(fmt.Sprintf("%d", report.AlertsSent), qc.ColorWhite, true))
+	fmt.Printf("  • Notifications sent: %s\n", c.format(fmt.Sprintf("%d", report.NotificationsSent), qc.ColorWhite, true))
+	fmt.Println()
+
+	return nil
+}
+
 // WebhookAlertStrategy implements webhook-based alerting
 type WebhookAlertStrategy struct {
 	webhookURL string
@@ -463,6 +515,20 @@ func (w *WebhookAlertStrategy) sendWebhook(ctx context.Context, payload map[stri
 // Name returns the strategy name
 func (w *WebhookAlertStrategy) Name() string {
 	return "webhook"
+}
+
+// SendStatusReport sends a status report via webhook
+func (w *WebhookAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
+	payload := map[string]interface{}{
+		"type":               "status_report",
+		"active_outages":     len(report.ActiveOutages),
+		"resolved_outages":   len(report.ResolvedOutages),
+		"alerts_sent":        report.AlertsSent,
+		"notifications_sent": report.NotificationsSent,
+		"period_start":       report.ReportPeriodStart.Format(time.RFC3339),
+		"period_end":         report.ReportPeriodEnd.Format(time.RFC3339),
+	}
+	return w.sendWebhook(ctx, payload)
 }
 
 // SlackAlertStrategy implements Slack-based alerting
@@ -820,6 +886,57 @@ func (s *SlackAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 // Name returns the strategy name
 func (s *SlackAlertStrategy) Name() string {
 	return "slack"
+}
+
+// SendStatusReport sends a status report to Slack
+func (s *SlackAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
+	periodDuration := report.ReportPeriodEnd.Sub(report.ReportPeriodStart)
+
+	// Build message
+	var message strings.Builder
+	message.WriteString(fmt.Sprintf("📊 *Status Report* (last %v)\n\n", periodDuration.Round(time.Minute)))
+
+	// Active outages
+	if len(report.ActiveOutages) > 0 {
+		message.WriteString(fmt.Sprintf("🔴 *Active Outages (%d):*\n", len(report.ActiveOutages)))
+		for _, outage := range report.ActiveOutages {
+			ackInfo := ""
+			if outage.Acknowledged {
+				if outage.AcknowledgedBy != "" {
+					ackInfo = fmt.Sprintf(" _(acknowledged by %s)_", outage.AcknowledgedBy)
+				} else {
+					ackInfo = " _(acknowledged)_"
+				}
+			}
+			message.WriteString(fmt.Sprintf("• %s - down for %v%s\n",
+				outage.TargetName, outage.Duration.Round(time.Second), ackInfo))
+		}
+		message.WriteString("\n")
+	} else {
+		message.WriteString("✅ *No active outages*\n\n")
+	}
+
+	// Resolved outages
+	if len(report.ResolvedOutages) > 0 {
+		message.WriteString(fmt.Sprintf("✅ *Resolved Outages (%d):*\n", len(report.ResolvedOutages)))
+		for _, resolved := range report.ResolvedOutages {
+			message.WriteString(fmt.Sprintf("• %s - was down for %v\n",
+				resolved.TargetName, resolved.DownDuration.Round(time.Second)))
+		}
+		message.WriteString("\n")
+	}
+
+	// Metrics
+	message.WriteString("📈 *Metrics:*\n")
+	message.WriteString(fmt.Sprintf("• Alerts sent: %d\n", report.AlertsSent))
+	message.WriteString(fmt.Sprintf("• Notifications sent: %d\n", report.NotificationsSent))
+
+	payload := map[string]interface{}{
+		"text":   message.String(),
+		"mrkdwn": true,
+	}
+
+	return s.sendSlackWebhook(ctx, payload)
 }
 
 // ConsoleNotificationStrategy implements console-based notification handling
@@ -1258,6 +1375,59 @@ func (e *EmailAlertStrategy) SendAcknowledgement(ctx context.Context, target *Ta
 // Name returns the strategy name
 func (e *EmailAlertStrategy) Name() string {
 	return "email"
+}
+
+// SendStatusReport sends a status report via email
+func (e *EmailAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
+	periodDuration := report.ReportPeriodEnd.Sub(report.ReportPeriodStart)
+	subject := fmt.Sprintf("📊 Status Report - %v period", periodDuration.Round(time.Minute))
+
+	var body strings.Builder
+	body.WriteString("<html><body>")
+	body.WriteString(fmt.Sprintf("<h2 style=\"color:#1976d2\">📊 Status Report</h2>"))
+	body.WriteString(fmt.Sprintf("<p><strong>Period:</strong> %s to %s (%v)</p>",
+		report.ReportPeriodStart.Format("15:04:05"),
+		report.ReportPeriodEnd.Format("15:04:05"),
+		periodDuration.Round(time.Minute)))
+
+	// Active outages
+	if len(report.ActiveOutages) > 0 {
+		body.WriteString(fmt.Sprintf("<h3 style=\"color:#c62828\">🔴 Active Outages (%d)</h3><ul>", len(report.ActiveOutages)))
+		for _, outage := range report.ActiveOutages {
+			ackInfo := ""
+			if outage.Acknowledged {
+				if outage.AcknowledgedBy != "" {
+					ackInfo = fmt.Sprintf(" <em>(acknowledged by %s)</em>", outage.AcknowledgedBy)
+				} else {
+					ackInfo = " <em>(acknowledged)</em>"
+				}
+			}
+			body.WriteString(fmt.Sprintf("<li>%s - down for %v%s</li>",
+				outage.TargetName, outage.Duration.Round(time.Second), ackInfo))
+		}
+		body.WriteString("</ul>")
+	} else {
+		body.WriteString("<p style=\"color:#2e7d32\">✅ <strong>No active outages</strong></p>")
+	}
+
+	// Resolved outages
+	if len(report.ResolvedOutages) > 0 {
+		body.WriteString(fmt.Sprintf("<h3 style=\"color:#2e7d32\">✅ Resolved Outages (%d)</h3><ul>", len(report.ResolvedOutages)))
+		for _, resolved := range report.ResolvedOutages {
+			body.WriteString(fmt.Sprintf("<li>%s - was down for %v</li>",
+				resolved.TargetName, resolved.DownDuration.Round(time.Second)))
+		}
+		body.WriteString("</ul>")
+	}
+
+	// Metrics
+	body.WriteString("<h3>📈 Metrics</h3><ul>")
+	body.WriteString(fmt.Sprintf("<li>Alerts sent: %d</li>", report.AlertsSent))
+	body.WriteString(fmt.Sprintf("<li>Notifications sent: %d</li>", report.NotificationsSent))
+	body.WriteString("</ul>")
+	body.WriteString("</body></html>")
+
+	return sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body.String(), e.debug)
 }
 
 // SendStartupMessage sends a startup notification via email
@@ -1736,6 +1906,40 @@ func (f *FileAlertStrategy) SendAcknowledgement(ctx context.Context, target *Tar
 // Name returns the strategy name
 func (f *FileAlertStrategy) Name() string {
 	return "file"
+}
+
+// SendStatusReport logs a status report to file
+func (f *FileAlertStrategy) SendStatusReport(ctx context.Context, report *StatusReportData) error {
+	periodDuration := report.ReportPeriodEnd.Sub(report.ReportPeriodStart)
+
+	logEntry := map[string]interface{}{
+		"timestamp":    time.Now().Format(time.RFC3339Nano),
+		"level":        "info",
+		"service.name": "quick_watch",
+		"event.type":   "status_report",
+		"report": map[string]interface{}{
+			"period_start":       report.ReportPeriodStart.Format(time.RFC3339),
+			"period_end":         report.ReportPeriodEnd.Format(time.RFC3339),
+			"period_duration":    periodDuration.String(),
+			"active_outages":     len(report.ActiveOutages),
+			"resolved_outages":   len(report.ResolvedOutages),
+			"alerts_sent":        report.AlertsSent,
+			"notifications_sent": report.NotificationsSent,
+		},
+		"active_outages":   report.ActiveOutages,
+		"resolved_outages": report.ResolvedOutages,
+	}
+
+	if f.debug {
+		fmt.Printf("🐛 FILE DEBUG: Writing status report to %s\n", f.filePath)
+	}
+
+	if err := f.appendLogEntry(logEntry); err != nil {
+		return err
+	}
+
+	fmt.Printf("📄 FILE: Status report logged to %s\n", f.filePath)
+	return nil
 }
 
 // HandleNotification handles incoming notifications by logging to file
