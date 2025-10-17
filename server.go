@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,13 +41,23 @@ func (s *Server) Start(ctx context.Context) error {
 	config := s.stateManager.GetTargetConfig()
 	s.engine = NewTargetEngine(config, s.stateManager)
 
+	// Get settings
+	settings := s.stateManager.GetSettings()
+	
+	// Configure acknowledgements
+	port := settings.WebhookPort
+	if port == 0 {
+		port = 8080
+	}
+	serverAddress := fmt.Sprintf("http://localhost:%d", port)
+	s.engine.SetAcknowledgementConfig(serverAddress, settings.AcknowledgementsEnabled)
+
 	// Start targeting
 	if err := s.engine.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start targeting engine: %v", err)
 	}
 
 	// Send startup message if enabled and configured
-	settings := s.stateManager.GetSettings()
 	if settings.Startup.Enabled {
 		s.sendStartupMessage(ctx)
 	}
@@ -70,6 +81,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/acknowledge/", s.handleAcknowledge)
+	mux.HandleFunc("/api/trigger/", s.handleTrigger)
 
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
@@ -79,11 +92,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Root endpoint
 	mux.HandleFunc("/", s.handleRoot)
 
-	// Use configured port or default to 8080
-	port := settings.WebhookPort
-	if port == 0 {
-		port = 8080
-	}
+	// Server is configured with port from settings (already set above)
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -191,14 +200,43 @@ func (s *Server) registerHookRoutes(mux *http.ServeMux) {
 				Data:      body,
 			}
 
+			// Generate acknowledgement token if enabled
+			var ackURL string
+			if s.stateManager != nil && s.engine != nil {
+				settings := s.stateManager.GetSettings()
+				if settings.AcknowledgementsEnabled {
+					// Generate token (same format as target ack tokens)
+					token := fmt.Sprintf("%x", time.Now().UnixNano())
+					hookState := &HookState{
+						HookName:    h.Name,
+						Message:     msg,
+						TriggeredAt: time.Now(),
+						AckToken:    token,
+					}
+					
+					s.engine.ackMutex.Lock()
+					s.engine.hookAckTokenMap[token] = hookState
+					s.engine.ackMutex.Unlock()
+					
+					ackURL = s.engine.GetAcknowledgementURL(token)
+				}
+			}
+
 			// Dispatch to selected notification strategies
 			if len(h.Alerts) == 0 {
 				h.Alerts = []string{"console"}
 			}
 			for _, alertName := range h.Alerts {
 				if strat, exists := s.engine.notificationStrategies[alertName]; exists {
-					if err := strat.HandleNotification(r.Context(), notification); err != nil {
-						log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+					// Use acknowledgement-aware method if available
+					if ackSender, ok := strat.(AcknowledgementAwareNotification); ok && ackURL != "" {
+						if err := ackSender.HandleNotificationWithAck(r.Context(), notification, ackURL); err != nil {
+							log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+						}
+					} else {
+						if err := strat.HandleNotification(r.Context(), notification); err != nil {
+							log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+						}
 					}
 				}
 			}
@@ -499,6 +537,432 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleTrigger handles webhook target trigger requests
+func (s *Server) handleTrigger(w http.ResponseWriter, r *http.Request) {
+	// Extract target name from path
+	path := strings.TrimPrefix(r.URL.Path, "/api/trigger/")
+	if path == "" {
+		http.Error(w, "Target name required", http.StatusBadRequest)
+		return
+	}
+
+	targetName := path
+
+	// Get message and duration from request
+	var message string
+	var duration int
+
+	if r.Method == "POST" {
+		// Parse JSON body
+		var requestData struct {
+			Message  string `json:"message"`
+			Duration int    `json:"duration"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err == nil {
+			message = requestData.Message
+			duration = requestData.Duration
+		}
+	}
+
+	// Also check query params (for GET requests or as fallback)
+	if message == "" {
+		message = r.URL.Query().Get("message")
+	}
+	if message == "" {
+		message = r.FormValue("message")
+	}
+	if message == "" {
+		message = "Webhook triggered"
+	}
+
+	if duration == 0 {
+		if d := r.URL.Query().Get("duration"); d != "" {
+			if parsed, err := strconv.Atoi(d); err == nil {
+				duration = parsed
+			}
+		}
+	}
+	if duration == 0 {
+		if d := r.FormValue("duration"); d != "" {
+			if parsed, err := strconv.Atoi(d); err == nil {
+				duration = parsed
+			}
+		}
+	}
+
+	// Trigger the webhook target
+	state, err := s.engine.TriggerWebhookTarget(targetName, message, duration)
+	if err != nil {
+		log.Printf("Error triggering webhook target %s: %v", targetName, err)
+		http.Error(w, fmt.Sprintf("Failed to trigger target: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	response := map[string]interface{}{
+		"status":  "triggered",
+		"target":  state.Target.Name,
+		"message": message,
+	}
+
+	if state.RecoveryTime != nil {
+		response["recovery_time"] = state.RecoveryTime.Format(time.RFC3339)
+		response["duration_seconds"] = duration
+	}
+
+	if state.CurrentAckToken != "" && s.engine.acksEnabled {
+		response["acknowledgement_url"] = s.engine.GetAcknowledgementURL(state.CurrentAckToken)
+	}
+
+	json.NewEncoder(w).Encode(response)
+
+	log.Printf("✅ Webhook target '%s' triggered: %s", targetName, message)
+}
+
+// handleAcknowledge handles alert acknowledgement requests
+func (s *Server) handleAcknowledge(w http.ResponseWriter, r *http.Request) {
+	// Extract token from path
+	path := strings.TrimPrefix(r.URL.Path, "/api/acknowledge/")
+	if path == "" {
+		http.Error(w, "Token required", http.StatusBadRequest)
+		return
+	}
+
+	token := path
+
+	// Get acknowledger info from query params or form
+	acknowledgedBy := r.URL.Query().Get("by")
+	if acknowledgedBy == "" {
+		acknowledgedBy = r.FormValue("by")
+	}
+	if acknowledgedBy == "" {
+		acknowledgedBy = "Anonymous"
+	}
+
+	note := r.URL.Query().Get("note")
+	if note == "" {
+		note = r.FormValue("note")
+	}
+
+	// Check if this is a target alert or hook by looking up the token
+	var isHook bool
+	var alreadyAcknowledged bool
+	var targetName, targetURL, hookMessage string
+	var previouslyAcknowledgedBy string
+	var previouslyAcknowledgedAt time.Time
+	
+	// First check if it's a target alert token
+	s.engine.ackMutex.RLock()
+	state, isTargetToken := s.engine.ackTokenMap[token]
+	s.engine.ackMutex.RUnlock()
+	
+	if isTargetToken {
+		// It's a target alert
+		isHook = false
+		targetName = state.Target.Name
+		targetURL = state.Target.URL
+		
+		// Check if already acknowledged
+		if state.AcknowledgedAt != nil {
+			alreadyAcknowledged = true
+			previouslyAcknowledgedBy = state.AcknowledgedBy
+			previouslyAcknowledgedAt = *state.AcknowledgedAt
+		} else {
+			// First acknowledgement - acknowledge it
+			_, err := s.engine.AcknowledgeAlert(token, acknowledgedBy, note)
+			if err != nil {
+				log.Printf("Error acknowledging target alert: %v", err)
+				http.Error(w, "Failed to acknowledge alert", http.StatusInternalServerError)
+				return
+			}
+			
+			// Send notifications
+			for _, strat := range state.AlertStrategies {
+				if ackStrat, ok := strat.(AcknowledgementAwareAlert); ok {
+					if err := ackStrat.SendAcknowledgement(r.Context(), state.Target, acknowledgedBy, note); err != nil {
+						log.Printf("Failed to send acknowledgement notification via %s: %v", strat.Name(), err)
+					}
+				}
+			}
+		}
+	} else {
+		// Try as a hook token
+		s.engine.ackMutex.Lock()
+		hookState, exists := s.engine.hookAckTokenMap[token]
+		if !exists {
+			s.engine.ackMutex.Unlock()
+			log.Printf("Error: Token not found: %s", token)
+			http.Error(w, "Invalid or expired acknowledgement token", http.StatusBadRequest)
+			return
+		}
+		
+		isHook = true
+		targetName = hookState.HookName
+		hookMessage = hookState.Message
+		
+		// Check if already acknowledged
+		if hookState.AcknowledgedAt != nil {
+			alreadyAcknowledged = true
+			previouslyAcknowledgedBy = hookState.AcknowledgedBy
+			previouslyAcknowledgedAt = *hookState.AcknowledgedAt
+			s.engine.ackMutex.Unlock()
+		} else {
+			// First acknowledgement - mark as acknowledged
+			now := time.Now()
+			hookState.AcknowledgedAt = &now
+			hookState.AcknowledgedBy = acknowledgedBy
+			hookState.AcknowledgementNote = note
+			s.engine.ackMutex.Unlock()
+			
+			// Send acknowledgement notification to all notification strategies
+			hooks := s.stateManager.ListHooks()
+			if hook, exists := hooks[hookState.HookName]; exists {
+				for _, alertName := range hook.Alerts {
+					if strat, exists := s.engine.notificationStrategies[alertName]; exists {
+						if ackStrat, ok := strat.(AcknowledgementAwareNotification); ok {
+							if err := ackStrat.SendNotificationAcknowledgement(r.Context(), hookState.HookName, acknowledgedBy, note); err != nil {
+								log.Printf("Failed to send hook acknowledgement notification via %s: %v", alertName, err)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Return a nice HTML response for browser users
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	var html string
+	
+	if alreadyAcknowledged {
+		// Already acknowledged - show info page
+		if isHook {
+			html = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Already Acknowledged</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .info {
+            background-color: #2196F3;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <div class="icon">ℹ️</div>
+        <h1>Already Acknowledged</h1>
+        <p>This notification has already been acknowledged.</p>
+    </div>
+    <div class="details">
+        <h3>Details:</h3>
+        <p><strong>Hook:</strong> %s</p>
+        <p><strong>Message:</strong> %s</p>
+        <p><strong>Previously acknowledged by:</strong> %s</p>
+        <p><strong>Acknowledged at:</strong> %s</p>
+    </div>
+    <p><small>You can close this window now.</small></p>
+</body>
+</html>`, targetName, hookMessage, previouslyAcknowledgedBy, previouslyAcknowledgedAt.Format("2006-01-02 15:04:05"))
+		} else {
+			html = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Already Acknowledged</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .info {
+            background-color: #2196F3;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <div class="icon">ℹ️</div>
+        <h1>Already Acknowledged</h1>
+        <p>This alert has already been acknowledged.</p>
+    </div>
+    <div class="details">
+        <h3>Details:</h3>
+        <p><strong>Target:</strong> %s</p>
+        <p><strong>URL:</strong> %s</p>
+        <p><strong>Previously acknowledged by:</strong> %s</p>
+        <p><strong>Acknowledged at:</strong> %s</p>
+    </div>
+    <p><small>You can close this window now.</small></p>
+</body>
+</html>`, targetName, targetURL, previouslyAcknowledgedBy, previouslyAcknowledgedAt.Format("2006-01-02 15:04:05"))
+		}
+	} else if isHook {
+		// Hook acknowledgement response
+		html = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Notification Acknowledged</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .success {
+            background-color: #4CAF50;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="success">
+        <div class="icon">✅</div>
+        <h1>Notification Acknowledged</h1>
+        <p>Thank you for acknowledging this notification!</p>
+    </div>
+    <div class="details">
+        <h3>Details:</h3>
+        <p><strong>Hook:</strong> %s</p>
+        <p><strong>Message:</strong> %s</p>
+        <p><strong>Acknowledged by:</strong> %s</p>
+        <p><strong>Time:</strong> %s</p>
+        %s
+    </div>
+    <p><small>You can close this window now.</small></p>
+</body>
+</html>`, targetName, hookMessage, acknowledgedBy, time.Now().Format("2006-01-02 15:04:05"),
+			func() string {
+				if note != "" {
+					return fmt.Sprintf("<p><strong>Note:</strong> %s</p>", note)
+				}
+				return ""
+			}())
+	} else {
+		// Target alert acknowledgement response
+		html = fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Alert Acknowledged</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .success {
+            background-color: #4CAF50;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .details {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="success">
+        <div class="icon">✅</div>
+        <h1>Alert Acknowledged</h1>
+        <p>Thank you for acknowledging this alert!</p>
+    </div>
+    <div class="details">
+        <h3>Details:</h3>
+        <p><strong>Target:</strong> %s</p>
+        <p><strong>URL:</strong> %s</p>
+        <p><strong>Acknowledged by:</strong> %s</p>
+        <p><strong>Time:</strong> %s</p>
+        %s
+    </div>
+    <p><small>You can close this window now.</small></p>
+</body>
+</html>`, targetName, targetURL, acknowledgedBy, time.Now().Format("2006-01-02 15:04:05"),
+			func() string {
+				if note != "" {
+					return fmt.Sprintf("<p><strong>Note:</strong> %s</p>", note)
+				}
+				return ""
+			}())
+	}
+
+	w.Write([]byte(html))
 }
 
 // sendStartupMessage sends startup notifications to configured alerts

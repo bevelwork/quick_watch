@@ -30,11 +30,12 @@ type WatchState struct {
 
 // ServerSettings represents server configuration
 type ServerSettings struct {
-	WebhookPort      int           `yaml:"webhook_port"`
-	WebhookPath      string        `yaml:"webhook_path"`
-	CheckInterval    int           `yaml:"check_interval"`    // seconds (default: 5s)
-	DefaultThreshold int           `yaml:"default_threshold"` // seconds (default: 30s)
-	Startup          StartupConfig `yaml:"startup"`           // startup message configuration
+	WebhookPort             int           `yaml:"webhook_port"`
+	WebhookPath             string        `yaml:"webhook_path"`
+	CheckInterval           int           `yaml:"check_interval"`            // seconds (default: 5s)
+	DefaultThreshold        int           `yaml:"default_threshold"`         // seconds (default: 30s)
+	Startup                 StartupConfig `yaml:"startup"`                   // startup message configuration
+	AcknowledgementsEnabled bool          `yaml:"acknowledgements_enabled"`  // enable alert acknowledgements
 }
 
 // StartupConfig represents startup message configuration

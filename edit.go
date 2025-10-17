@@ -192,6 +192,9 @@ func handleEditTargets(stateFile string) {
 						target.CheckStrategy = checkStrategy
 						fields.CheckStrategy = true
 					}
+					if duration, ok := targetMap["duration"].(int); ok {
+						target.Duration = duration
+					}
 
 					// Check if headers was explicitly set (even if empty)
 					if _, headersExists := targetMap["headers"]; headersExists {
@@ -259,6 +262,9 @@ func handleEditTargets(stateFile string) {
 						target.CheckStrategy = checkStrategy
 						fields.CheckStrategy = true
 					}
+					if duration, ok := targetMap["duration"].(int); ok {
+						target.Duration = duration
+					}
 
 					if target.URL != "" {
 						targetsMap[target.URL] = target
@@ -290,6 +296,9 @@ func handleEditTargets(stateFile string) {
 
 	// Preserve user-provided values exactly as entered; do not strip defaults
 
+	// Track existing targets before making changes
+	existingTargets := stateManager.ListTargets()
+
 	// Save the changes by updating the state manager
 	for url, target := range targetsMap {
 		// Merge with existing target to avoid overwriting unspecified fields
@@ -317,6 +326,10 @@ func handleEditTargets(stateFile string) {
 			if !fields.CheckStrategy && target.CheckStrategy == "" {
 				target.CheckStrategy = existing.CheckStrategy
 			}
+			// Preserve duration if not specified
+			if target.Duration == 0 && existing.Duration > 0 {
+				target.Duration = existing.Duration
+			}
 			if !fields.Alerts && len(target.Alerts) == 0 {
 				if len(existing.Alerts) > 0 {
 					target.Alerts = existing.Alerts
@@ -333,6 +346,15 @@ func handleEditTargets(stateFile string) {
 		if err := stateManager.AddTarget(target); err != nil {
 			fmt.Printf("%s Failed to save target %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
 			return
+		}
+	}
+
+	// Remove targets that were deleted in the editor
+	for existingURL := range existingTargets {
+		if _, stillExists := targetsMap[existingURL]; !stillExists {
+			if err := stateManager.RemoveTarget(existingURL); err != nil {
+				fmt.Printf("%s Failed to remove target %s: %v\n", qc.Colorize("⚠️ Warning:", qc.ColorYellow), existingURL, err)
+			}
 		}
 	}
 
@@ -413,6 +435,14 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 		entry := map[string]interface{}{
 			"url": target.URL,
 		}
+		// Include check_strategy if set (important for webhook targets)
+		if target.CheckStrategy != "" && target.CheckStrategy != "http" {
+			entry["check_strategy"] = target.CheckStrategy
+		}
+		// Include duration if set (for webhook targets with auto-recovery)
+		if target.Duration > 0 {
+			entry["duration"] = target.Duration
+		}
 		// Include alerts field to preserve user-set alerts
 		if len(target.Alerts) > 0 {
 			entry["alerts"] = target.Alerts
@@ -480,7 +510,8 @@ func addEditComments(data []byte) []byte {
 		{6, "enabled: true", ""},
 		{6, "history_size: 100", ""},
 		{6, "threshold: 0.5", ""},
-		{4, "check_strategy: \"http\"", "# Check strategy"},
+		{4, "check_strategy: \"http\"", "# http or webhook"},
+		{4, "duration: 300", "# auto-recovery seconds (webhook targets only)"},
 		{4, "alerts: [\"console\"]", "# Alert strategy"},
 		{0, "", ""},
 	})
@@ -499,20 +530,27 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{0, "Edit targets below. Each key is the target name.", ""},
 		{0, "Only 'url' is required. Other fields are optional and have defaults.", ""},
 		{0, "", ""},
-		{0, "Full example (defaults shown; omit to use defaults):", ""},
-		{0, "my-target:", ""},
-		{2, "url: https://bevel.work", "# REQUIRED"},
+		{0, "HTTP Target Example (monitors an endpoint):", ""},
+		{0, "my-api:", ""},
+		{2, "url: https://api.example.com/health", "# REQUIRED"},
 		{2, "method: GET", "# default: GET"},
-		{2, "headers:", "# default: {} (none)"},
-		{4, "Authorization: Bearer <token>", ""},
 		{2, "threshold: 30", "# seconds; default: 30"},
-		{2, "status_codes: ['*']", "# accepts any by default"},
-		{2, "size_alerts:", "# page size change alerts (enabled by default)"},
-		{4, "enabled: true", ""},
-		{4, "history_size: 100", ""},
-		{4, "threshold: 0.5", "# 50% change"},
-		{2, "check_strategy: http", "# default: http"},
-		{2, "alerts: [console]", alertsDesc},
+		{2, "check_strategy: http", "# actively polls the URL"},
+		{2, "alerts: [console, slack-alerts]", alertsDesc},
+		{0, "", ""},
+		{0, "Webhook Target Example (manually triggered):", ""},
+		{0, "deployment-alert:", ""},
+		{2, "url: deployment-alert", "# identifier (not a real URL)"},
+		{2, "check_strategy: webhook", "# passive; triggered via API"},
+		{2, "duration: 600", "# auto-recover after 10 minutes"},
+		{2, "alerts: [console, slack-alerts, email]", "# who gets notified"},
+		{0, "", ""},
+		{0, "All available fields:", ""},
+		{0, "  method: GET", "# HTTP method (webhook ignores this)"},
+		{0, "  headers: {}", "# custom headers (webhook ignores this)"},
+		{0, "  threshold: 30", "# alert threshold in seconds"},
+		{0, "  status_codes: ['*']", "# acceptable codes (webhook ignores this)"},
+		{0, "  duration: 300", "# auto-recovery seconds (webhook only)"},
 		{0, "", ""},
 	})
 	commentedLines := append(rendered, lines...)
@@ -533,7 +571,8 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 	}
 
 	validCheckStrategies := map[string]bool{
-		"http": true,
+		"http":    true,
+		"webhook": true,
 	}
 
 	// Get valid alert alerts from alerts
@@ -560,9 +599,11 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 			return fmt.Errorf("target %s: name is REQUIRED and cannot be empty", url)
 		}
 
-		// Validate URL format (basic check)
-		if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
-			return fmt.Errorf("target %s: url must start with http:// or https://", url)
+		// Validate URL format (basic check) - skip for webhook targets
+		if target.CheckStrategy != "webhook" {
+			if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+				return fmt.Errorf("target %s: url must start with http:// or https://", url)
+			}
 		}
 
 		// Validate method if provided (don't apply default, just validate)
@@ -678,6 +719,7 @@ func editSettings(stateManager *StateManager) {
 			Enabled: true,
 			Alerts:  []string{"console"},
 		},
+		AcknowledgementsEnabled: false,
 	}
 
 	if webhookPort, ok := settingsData["webhook_port"].(int); ok {
@@ -691,6 +733,9 @@ func editSettings(stateManager *StateManager) {
 	}
 	if defaultThreshold, ok := settingsData["default_threshold"].(int); ok {
 		settings.DefaultThreshold = defaultThreshold
+	}
+	if acksEnabled, ok := settingsData["acknowledgements_enabled"].(bool); ok {
+		settings.AcknowledgementsEnabled = acksEnabled
 	}
 
 	// Parse startup configuration
@@ -757,10 +802,11 @@ func createTempSettingsFile(stateManager *StateManager) (string, error) {
 
 	// Create settings YAML structure
 	settingsOnly := map[string]interface{}{
-		"webhook_port":      settings.WebhookPort,
-		"webhook_path":      settings.WebhookPath,
-		"check_interval":    settings.CheckInterval,
-		"default_threshold": settings.DefaultThreshold,
+		"webhook_port":             settings.WebhookPort,
+		"webhook_path":             settings.WebhookPath,
+		"check_interval":           settings.CheckInterval,
+		"default_threshold":        settings.DefaultThreshold,
+		"acknowledgements_enabled": settings.AcknowledgementsEnabled,
 		"startup": map[string]interface{}{
 			"enabled":           settings.Startup.Enabled,
 			"alerts":            settings.Startup.Alerts,
@@ -1080,6 +1126,9 @@ func applyTargetsYAML(stateManager *StateManager, modifiedData []byte) {
 		return
 	}
 
+	// Track existing targets before making changes
+	existingTargets := stateManager.ListTargets()
+
 	// Merge with existing state to preserve unspecified fields
 	for url, target := range targetsMap {
 		if existing, ok := stateManager.GetTarget(url); ok {
@@ -1119,6 +1168,15 @@ func applyTargetsYAML(stateManager *StateManager, modifiedData []byte) {
 		if err := stateManager.AddTarget(target); err != nil {
 			fmt.Printf("%s Failed to save target %s: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), url, err)
 			return
+		}
+	}
+
+	// Remove targets that were deleted in the editor
+	for existingURL := range existingTargets {
+		if _, stillExists := targetsMap[existingURL]; !stillExists {
+			if err := stateManager.RemoveTarget(existingURL); err != nil {
+				fmt.Printf("%s Failed to remove target %s: %v\n", qc.Colorize("⚠️ Warning:", qc.ColorYellow), existingURL, err)
+			}
 		}
 	}
 
@@ -1176,11 +1234,12 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 		return
 	}
 	settings := ServerSettings{
-		WebhookPort:      8080,
-		WebhookPath:      "/webhook",
-		CheckInterval:    5,
-		DefaultThreshold: 30,
-		Startup:          StartupConfig{Enabled: true, Alerts: []string{"console"}},
+		WebhookPort:             8080,
+		WebhookPath:             "/webhook",
+		CheckInterval:           5,
+		DefaultThreshold:        30,
+		Startup:                 StartupConfig{Enabled: true, Alerts: []string{"console"}},
+		AcknowledgementsEnabled: false,
 	}
 	if v, ok := settingsData["webhook_port"].(int); ok {
 		settings.WebhookPort = v
@@ -1193,6 +1252,9 @@ func applySettingsYAML(stateManager *StateManager, modifiedData []byte) {
 	}
 	if v, ok := settingsData["default_threshold"].(int); ok {
 		settings.DefaultThreshold = v
+	}
+	if v, ok := settingsData["acknowledgements_enabled"].(bool); ok {
+		settings.AcknowledgementsEnabled = v
 	}
 	if startupData, ok := settingsData["startup"].(map[string]interface{}); ok {
 		if v, ok := startupData["enabled"].(bool); ok {
@@ -1449,6 +1511,9 @@ func parseTargetsInterface(src interface{}, out map[string]Target, fields map[st
 					target.CheckStrategy = checkStrategy
 					f.CheckStrategy = true
 				}
+				if duration, ok := targetMap["duration"].(int); ok {
+					target.Duration = duration
+				}
 				// Alerts: accept string or list
 				if aval, ok := targetMap["alerts"]; ok {
 					switch at := aval.(type) {
@@ -1623,9 +1688,11 @@ func validateStateFile(stateFile string, verbose bool) {
 			errors = append(errors, "Target: url is required")
 		}
 
-		// Check URL format
-		if target.URL != "" && !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
-			errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", target.URL))
+		// Check URL format - skip for webhook targets
+		if target.URL != "" && target.CheckStrategy != "webhook" {
+			if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+				errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", target.URL))
+			}
 		}
 
 		// Check HTTP method
@@ -1770,9 +1837,11 @@ func validateConfigFile(configFile string, verbose bool) {
 			errors = append(errors, fmt.Sprintf("Target %s: url is required", url))
 		}
 
-		// Check URL format
-		if target.URL != "" && !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
-			errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", url))
+		// Check URL format - skip for webhook targets
+		if target.URL != "" && target.CheckStrategy != "webhook" {
+			if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
+				errors = append(errors, fmt.Sprintf("Target %s: url must start with http:// or https://", url))
+			}
 		}
 
 		// Check HTTP method
