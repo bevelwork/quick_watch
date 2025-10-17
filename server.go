@@ -1644,7 +1644,15 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		if state.LastCheck != nil {
 			lastCheck = state.LastCheck.Timestamp.Format("2006-01-02 15:04:05 MST")
 			if state.LastCheck.ResponseTime > 0 {
-				responseTime = fmt.Sprintf("%dms", state.LastCheck.ResponseTime)
+				// Convert nanoseconds to seconds with 3 significant digits
+				seconds := state.LastCheck.ResponseTime.Seconds()
+				if seconds == 0 {
+					responseTime = "0s"
+				} else {
+					// Use toPrecision equivalent in Go
+					formatted := fmt.Sprintf("%.3g", seconds)
+					responseTime = formatted + "s"
+				}
 			}
 		}
 
@@ -1881,7 +1889,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 
 		statusText := ""
 		if entry.Success {
-			statusText = fmt.Sprintf("OK - %dms", entry.ResponseTime)
+			// Convert milliseconds to seconds with 3 significant digits
+			seconds := float64(entry.ResponseTime) / 1000.0
+			if seconds == 0 {
+				statusText = "OK - 0s"
+			} else {
+				formatted := fmt.Sprintf("%.3g", seconds)
+				statusText = fmt.Sprintf("OK - %ss", formatted)
+			}
 		} else {
 			statusText = "FAILED"
 		}
