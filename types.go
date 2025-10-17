@@ -436,39 +436,112 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 	wasDown := state.IsDown
 	state.IsDown = !result.Success
 
+	// Get threshold (default 30 seconds if not set)
+	threshold := state.Target.Threshold
+	if threshold == 0 {
+		threshold = 30
+	}
+	thresholdDuration := time.Duration(threshold) * time.Second
+
 	if !result.Success && !wasDown {
-		// Just went down - send initial alert
+		// Just started failing - record the time but DON'T alert yet
 		now := time.Now()
 		state.DownSince = &now
-		state.FailureCount = 1
-		state.LastAlertTime = &now
+		// Don't set FailureCount, LastAlertTime, or send alerts yet
+		// Wait until threshold is exceeded
+	} else if !result.Success && wasDown {
+		// Still failing - check if we've exceeded the threshold
+		if state.DownSince != nil {
+			downDuration := time.Since(*state.DownSince)
 
-		// Set alert count in result for display
-		result.AlertCount = state.FailureCount
+			// Check if we've been down long enough to send an alert
+			if downDuration >= thresholdDuration {
+				// If this is the first alert, initialize the alert state
+				if state.FailureCount == 0 {
+					// First alert after threshold exceeded
+					now := time.Now()
+					state.FailureCount = 1
+					state.LastAlertTime = &now
 
-		// Generate acknowledgement token if enabled and not already acknowledged
-		var ackURL string
-		if e.acksEnabled && state.AcknowledgedAt == nil {
-			token := e.GenerateAckToken(state)
-			ackURL = e.GetAcknowledgementURL(token)
-		}
+					// Set alert count in result for display
+					result.AlertCount = state.FailureCount
 
-		for _, strat := range state.AlertStrategies {
-			if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
-				ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
-			} else {
-				strat.SendAlert(ctx, state.Target, result)
+					// Generate acknowledgement token if enabled and not already acknowledged
+					var ackURL string
+					if e.acksEnabled && state.AcknowledgedAt == nil {
+						token := e.GenerateAckToken(state)
+						ackURL = e.GetAcknowledgementURL(token)
+					}
+
+					for _, strat := range state.AlertStrategies {
+						if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
+							ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
+						} else {
+							strat.SendAlert(ctx, state.Target, result)
+						}
+					}
+
+					// Update history entry
+					historyEntry.AlertSent = true
+					historyEntry.AlertCount = state.FailureCount
+
+					// Track metric: alert sent
+					e.metrics.mutex.Lock()
+					e.metrics.AlertsSent++
+					e.metrics.mutex.Unlock()
+				} else {
+					// Already sent at least one alert, check if we should send another (exponential backoff)
+					if state.AcknowledgedAt == nil {
+						// Calculate exponential backoff based on how many alerts we've already sent
+						// Formula: 5 * 2^(FailureCount-1) seconds
+						// FailureCount=1 -> 5s, FailureCount=2 -> 10s, FailureCount=3 -> 20s, etc.
+						backoffSeconds := 5 * (1 << uint(state.FailureCount-1))
+						backoffDuration := time.Duration(backoffSeconds) * time.Second
+
+						// Check if enough time has passed since last alert
+						if state.LastAlertTime != nil && time.Since(*state.LastAlertTime) >= backoffDuration {
+							// Time to send another alert
+							now := time.Now()
+							state.LastAlertTime = &now
+							state.FailureCount++ // Increment only when we actually send an alert
+
+							// Set alert count in result for display
+							result.AlertCount = state.FailureCount
+
+							// Generate or reuse acknowledgement token
+							var ackURL string
+							if e.acksEnabled {
+								if state.CurrentAckToken == "" {
+									token := e.GenerateAckToken(state)
+									ackURL = e.GetAcknowledgementURL(token)
+								} else {
+									ackURL = e.GetAcknowledgementURL(state.CurrentAckToken)
+								}
+							}
+
+							for _, strat := range state.AlertStrategies {
+								if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
+									ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
+								} else {
+									strat.SendAlert(ctx, state.Target, result)
+								}
+							}
+
+							// Update history entry
+							historyEntry.AlertSent = true
+							historyEntry.AlertCount = state.FailureCount
+
+							// Track metric: alert sent
+							e.metrics.mutex.Lock()
+							e.metrics.AlertsSent++
+							e.metrics.mutex.Unlock()
+						}
+					}
+					// If acknowledged, don't send any more alerts until service recovers
+				}
 			}
+			// Else: haven't been down long enough yet, don't alert
 		}
-
-		// Update history entry
-		historyEntry.AlertSent = true
-		historyEntry.AlertCount = state.FailureCount
-
-		// Track metric: alert sent
-		e.metrics.mutex.Lock()
-		e.metrics.AlertsSent++
-		e.metrics.mutex.Unlock()
 	} else if result.Success && wasDown {
 		// Just came back up - clear acknowledgement and reset counters
 		e.ClearAcknowledgement(state)
@@ -495,55 +568,6 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 		for _, strat := range state.AlertStrategies {
 			strat.SendAllClear(ctx, state.Target, result)
 		}
-	} else if !result.Success && wasDown {
-		// Still down - check if we should send another alert (only if not acknowledged)
-		if state.AcknowledgedAt == nil {
-			// Calculate exponential backoff based on how many alerts we've already sent
-			// Formula: 5 * 2^(FailureCount-1) seconds
-			// FailureCount=1 -> 5s, FailureCount=2 -> 10s, FailureCount=3 -> 20s, etc.
-			backoffSeconds := 5 * (1 << uint(state.FailureCount-1))
-			backoffDuration := time.Duration(backoffSeconds) * time.Second
-
-			// Check if enough time has passed since last alert
-			if state.LastAlertTime != nil && time.Since(*state.LastAlertTime) >= backoffDuration {
-				// Time to send another alert
-				now := time.Now()
-				state.LastAlertTime = &now
-				state.FailureCount++ // Increment only when we actually send an alert
-
-				// Set alert count in result for display
-				result.AlertCount = state.FailureCount
-
-				// Generate or reuse acknowledgement token
-				var ackURL string
-				if e.acksEnabled {
-					if state.CurrentAckToken == "" {
-						token := e.GenerateAckToken(state)
-						ackURL = e.GetAcknowledgementURL(token)
-					} else {
-						ackURL = e.GetAcknowledgementURL(state.CurrentAckToken)
-					}
-				}
-
-				for _, strat := range state.AlertStrategies {
-					if ackSender, ok := strat.(AcknowledgementAwareAlert); ok && ackURL != "" {
-						ackSender.SendAlertWithAck(ctx, state.Target, result, ackURL)
-					} else {
-						strat.SendAlert(ctx, state.Target, result)
-					}
-				}
-
-				// Update history entry
-				historyEntry.AlertSent = true
-				historyEntry.AlertCount = state.FailureCount
-
-				// Track metric: alert sent
-				e.metrics.mutex.Lock()
-				e.metrics.AlertsSent++
-				e.metrics.mutex.Unlock()
-			}
-		}
-		// If acknowledged, don't send any more alerts until service recovers
 	}
 
 	// Save history entry

@@ -1615,9 +1615,28 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 
 	targets := s.engine.GetTargetStatus()
 
+	// Sort targets: unhealthy first, then healthy
+	sortedTargets := make([]*TargetState, len(targets))
+	copy(sortedTargets, targets)
+
+	// Separate into two groups
+	var unhealthy []*TargetState
+	var healthy []*TargetState
+
+	for _, state := range sortedTargets {
+		if state.IsDown {
+			unhealthy = append(unhealthy, state)
+		} else {
+			healthy = append(healthy, state)
+		}
+	}
+
+	// Combine: unhealthy first
+	sortedTargets = append(unhealthy, healthy...)
+
 	// Build target cards
 	targetCards := ""
-	for _, state := range targets {
+	for _, state := range sortedTargets {
 		urlSafeName := state.GetURLSafeName()
 		statusClass := "healthy"
 		statusIcon := "✅"
@@ -1657,7 +1676,7 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		targetCards += fmt.Sprintf(`
-			<a href="/targets/%s" class="target-card %s">
+			<a href="/targets/%s" class="target-card %s" data-target-name="%s" data-target-url="%s">
 				<div class="target-header">
 					<span class="status-icon">%s</span>
 					<h3>%s</h3>
@@ -1670,7 +1689,7 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 					<div><strong>Response Time:</strong> %s</div>
 				</div>
 			</a>
-		`, urlSafeName, statusClass, statusIcon, state.Target.Name, statusClass, statusText, state.Target.URL, downtime, lastCheck, responseTime)
+		`, urlSafeName, statusClass, strings.ToLower(state.Target.Name), strings.ToLower(state.Target.URL), statusIcon, state.Target.Name, statusClass, statusText, state.Target.URL, downtime, lastCheck, responseTime)
 	}
 
 	emptyState := ""
@@ -1703,7 +1722,7 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
             padding: 40px 20px;
         }
         header {
-            margin-bottom: 40px;
+            margin-bottom: 30px;
         }
         h1 {
             font-size: 32px;
@@ -1713,6 +1732,45 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
         .subtitle {
             color: #8b949e;
             font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .filter-container {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .filter-input {
+            flex: 1;
+            max-width: 400px;
+            padding: 10px 15px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 14px;
+            outline: none;
+        }
+        .filter-input:focus {
+            border-color: #58a6ff;
+        }
+        .clear-filter-btn {
+            padding: 10px 20px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .clear-filter-btn:hover {
+            background: #30363d;
+            border-color: #58a6ff;
+        }
+        .filter-count {
+            color: #8b949e;
+            font-size: 14px;
         }
         .target-grid {
             display: grid;
@@ -1728,6 +1786,9 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
             color: inherit;
             transition: all 0.2s ease;
             display: block;
+        }
+        .target-card.hidden {
+            display: none;
         }
         .target-card:hover {
             border-color: #58a6ff;
@@ -1809,8 +1870,52 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
         }
     </style>
     <script>
-        // Auto-refresh every 5 seconds
-        setTimeout(() => window.location.reload(), 5000);
+        // Filter functionality
+        let filterTimeout;
+        
+        function filterTargets() {
+            const filterValue = document.getElementById('filterInput').value.toLowerCase();
+            const cards = document.querySelectorAll('.target-card');
+            let visibleCount = 0;
+            
+            cards.forEach(card => {
+                const name = card.getAttribute('data-target-name');
+                const url = card.getAttribute('data-target-url');
+                
+                if (name.includes(filterValue) || url.includes(filterValue)) {
+                    card.classList.remove('hidden');
+                    visibleCount++;
+                } else {
+                    card.classList.add('hidden');
+                }
+            });
+            
+            // Update count
+            const filterCount = document.getElementById('filterCount');
+            if (filterValue) {
+                filterCount.textContent = visibleCount + ' of ' + cards.length + ' targets';
+                filterCount.style.display = 'inline';
+            } else {
+                filterCount.style.display = 'none';
+            }
+        }
+        
+        function clearFilter() {
+            document.getElementById('filterInput').value = '';
+            filterTargets();
+            document.getElementById('filterInput').focus();
+        }
+        
+        // Auto-refresh every 5 seconds (but don't reload if filtering)
+        setTimeout(() => {
+            const filterValue = document.getElementById('filterInput').value;
+            if (!filterValue) {
+                window.location.reload();
+            } else {
+                // If filtering, just refresh after clearing filter
+                setTimeout(() => window.location.reload(), 5000);
+            }
+        }, 5000);
     </script>
 </head>
 <body>
@@ -1819,6 +1924,19 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
             <h1>🎯 Quick Watch Targets</h1>
             <p class="subtitle">Monitoring %d target(s)</p>
         </header>
+        
+        <div class="filter-container">
+            <input 
+                type="text" 
+                id="filterInput" 
+                class="filter-input" 
+                placeholder="Filter targets by name or URL..." 
+                oninput="filterTargets()"
+                autocomplete="off"
+            />
+            <button class="clear-filter-btn" onclick="clearFilter()">Clear Filter</button>
+            <span id="filterCount" class="filter-count" style="display: none;"></span>
+        </div>
         
         <div class="target-grid">
             %s

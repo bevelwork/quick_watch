@@ -7,7 +7,7 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 ## ✨ Features
 
 - **Simple URL Monitoring**: Check URLs every 5 seconds for response time, status codes, and response size
-- **Threshold-Based Alerting**: Configure how long a service can be down before firing alerts
+- **Threshold-Based Alerting**: Configure how long a service must be continuously down before firing alerts (prevents transient failures from triggering alerts)
 - **Exponential Backoff Alerts**: Intelligent alert throttling with exponential backoff (5s, 10s, 20s, 40s, etc.) to prevent alert fatigue
 - **Alert Acknowledgements**: Acknowledge alerts to stop repeated notifications while investigating issues
 - **Status Reports**: Periodic summaries (hourly by default) showing active/resolved outages and metrics
@@ -84,27 +84,53 @@ settings:
 
 ## Advanced Features
 
+### Threshold-Based Alerting
+
+Quick Watch uses a **threshold** to prevent transient failures or single slow responses from triggering alerts. The threshold specifies how long a service must be **continuously down** before the first alert is sent.
+
+**Configuration:**
+```yaml
+targets:
+  - name: "API Service"
+    url: "https://api.example.com/health"
+    threshold: 30  # seconds (default: 30)
+```
+
+**How it works:**
+1. **Check fails** at T=0s: Quick Watch marks the target as "starting to fail" but **does NOT send an alert yet**
+2. **Check at T=5s**: Still failing, but only 5 seconds elapsed → no alert
+3. **Check at T=10s**: Still failing, but only 10 seconds elapsed → no alert
+4. **Check at T=30s**: Still failing, **threshold exceeded** → **FIRST ALERT SENT**
+
+This prevents:
+- ❌ Single slow requests (e.g., 10-second timeout) from alerting immediately
+- ❌ Network blips or transient errors from causing alert noise
+- ❌ Load balancer health check delays from triggering false alerts
+- ✅ Only **sustained outages** trigger alerts
+
 ### Exponential Backoff Alerts
 
-Quick Watch automatically implements exponential backoff to prevent alert fatigue. When a target goes down, alerts are sent with progressively increasing intervals:
+After the threshold is exceeded and the first alert is sent, Quick Watch automatically implements exponential backoff to prevent alert fatigue:
 
-| Failure # | Time Since Last Alert | Cumulative Time |
-|-----------|----------------------|-----------------|
-| 1         | Immediate            | 0 seconds       |
-| 2         | 5 seconds            | 5 seconds       |
-| 3         | 10 seconds           | 15 seconds      |
-| 4         | 20 seconds           | 35 seconds      |
-| 5         | 40 seconds           | 75 seconds      |
-| 6         | 80 seconds           | ~2.5 minutes    |
-| 7         | 160 seconds          | ~5 minutes      |
-| 8         | 320 seconds          | ~10 minutes     |
+| Alert # | Time Since Last Alert | Cumulative Time Down |
+|---------|----------------------|-----------------------|
+| 1       | After threshold      | 30 seconds (threshold)|
+| 2       | 5 seconds            | 35 seconds            |
+| 3       | 10 seconds           | 45 seconds            |
+| 4       | 20 seconds           | 65 seconds            |
+| 5       | 40 seconds           | 105 seconds (~2min)   |
+| 6       | 80 seconds           | 185 seconds (~3min)   |
+| 7       | 160 seconds          | 345 seconds (~6min)   |
+| 8       | 320 seconds          | 665 seconds (~11min)  |
 
-**Backoff Formula**: `5 × 2^(failure_count-1)` seconds
+**Backoff Formula**: `5 × 2^(alert_count-1)` seconds
 
 **Important**: 
+- The **threshold** must be exceeded before the first alert
+- Once the first alert is sent, **exponential backoff** controls subsequent alerts
 - Once an alert is **acknowledged**, all subsequent alerts stop until the service recovers
-- When a service recovers, counters reset and the next incident starts fresh
-- No configuration needed - works automatically for all targets
+- When a service recovers, all counters reset and the next incident starts fresh
+- No additional configuration needed - works automatically for all targets
 
 For more details, see [EXPONENTIAL_BACKOFF.md](EXPONENTIAL_BACKOFF.md).
 
@@ -242,9 +268,13 @@ When running in server mode, Quick Watch automatically creates web pages for eac
 http://localhost:8080/targets
 ```
 - Shows all configured targets at a glance
+- **Unhealthy targets automatically sorted to the top**
 - Real-time status indicators (✅ Healthy, ❌ Down, 🔔 Acknowledged)
+- **Live filter** to search targets by name or URL (no page refresh needed)
+- **Clear filter button** to reset search
+- Filter count shows "X of Y targets" when filtering
 - Quick navigation to individual target details
-- Auto-refreshes every 5 seconds
+- Auto-refreshes every 5 seconds (pauses when actively filtering)
 
 **Individual Target Page:**
 ```
