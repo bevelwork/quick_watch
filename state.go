@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"maps"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -218,7 +216,9 @@ func (sm *StateManager) ListTargets() map[string]Target {
 
 	// Return a copy to avoid race conditions
 	result := make(map[string]Target)
-	maps.Copy(result, sm.state.Targets)
+	for k, v := range sm.state.Targets {
+		result[k] = v
+	}
 	return result
 }
 
@@ -259,11 +259,11 @@ func (sm *StateManager) GetTargetConfig() *TargetConfig {
 }
 
 // GetStateInfo returns basic state information
-func (sm *StateManager) GetStateInfo() map[string]any {
+func (sm *StateManager) GetStateInfo() map[string]interface{} {
 	sm.mutex.RLock()
 	defer sm.mutex.RUnlock()
 
-	return map[string]any{
+	return map[string]interface{}{
 		"version":  sm.state.Version,
 		"created":  sm.state.Created,
 		"updated":  sm.state.Updated,
@@ -299,58 +299,60 @@ func (sm *StateManager) GetNotifier(name string) (NotifierConfig, bool) {
 	return notifier, exists
 }
 
-// ListHooks returns all configured hooks
+// ListHooks returns all hooks
 func (sm *StateManager) ListHooks() map[string]Hook {
 	sm.mutex.RLock()
 	defer sm.mutex.RUnlock()
 
-	result := make(map[string]Hook)
-	maps.Copy(result, sm.state.Hooks)
-	return result
-}
-
-// GetHook returns a hook by name
-func (sm *StateManager) GetHook(name string) (Hook, bool) {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
-	hook, ok := sm.state.Hooks[name]
-	return hook, ok
+	if sm.state.Hooks == nil {
+		return make(map[string]Hook)
+	}
+	return sm.state.Hooks
 }
 
 // UpsertHook adds or updates a hook
 func (sm *StateManager) UpsertHook(name string, hook Hook) error {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
-	if hook.Name == "" {
-		hook.Name = name
+
+	if sm.state.Hooks == nil {
+		sm.state.Hooks = make(map[string]Hook)
 	}
-	// Path stores the hook name (route is always /hooks/<name>)
-	if hook.Path == "" {
-		hook.Path = name
-	}
-	// Normalize any legacy full paths to just the name
-	hook.Path = strings.TrimPrefix(hook.Path, "/hooks/")
-	hook.Path = strings.TrimPrefix(hook.Path, "/")
-	if len(hook.Methods) == 0 {
-		hook.Methods = []string{"POST"}
-	}
-	if len(hook.Alerts) == 0 {
-		hook.Alerts = []string{"console"}
-	}
-	if hook.Metadata == nil {
-		hook.Metadata = make(map[string]string)
-	}
+
 	sm.state.Hooks[name] = hook
+	sm.state.Updated = time.Now()
+
 	return sm.saveUnlocked()
 }
 
-// RemoveHook deletes a hook by name
+// GetHook returns a specific hook by name
+func (sm *StateManager) GetHook(name string) (Hook, bool) {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+
+	if sm.state.Hooks == nil {
+		return Hook{}, false
+	}
+
+	hook, exists := sm.state.Hooks[name]
+	return hook, exists
+}
+
+// RemoveHook removes a hook by name
 func (sm *StateManager) RemoveHook(name string) error {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
-	if _, ok := sm.state.Hooks[name]; !ok {
+
+	if sm.state.Hooks == nil {
 		return fmt.Errorf("hook %s not found", name)
 	}
+
+	if _, exists := sm.state.Hooks[name]; !exists {
+		return fmt.Errorf("hook %s not found", name)
+	}
+
 	delete(sm.state.Hooks, name)
+	sm.state.Updated = time.Now()
+
 	return sm.saveUnlocked()
 }

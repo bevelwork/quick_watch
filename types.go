@@ -3,8 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
+	"os"
+	"strings"
 	"time"
+
+	qc "github.com/bevelwork/quick_color"
 )
 
 // Target represents a targeting target
@@ -72,17 +77,18 @@ type HookAuth struct {
 
 // NotifierConfig represents a notification configuration
 type NotifierConfig struct {
-	Name        string                 `json:"name" yaml:"name"`
-	Type        string                 `json:"type" yaml:"type"` // "console" or "slack"
-	Enabled     bool                   `json:"enabled" yaml:"enabled"`
-	Settings    map[string]interface{} `json:"settings" yaml:"settings"`
-	Description string                 `json:"description,omitempty" yaml:"description,omitempty"`
+	Name        string         `json:"name" yaml:"name"`
+	Type        string         `json:"type" yaml:"type"` // "console" or "slack"
+	Enabled     bool           `json:"enabled" yaml:"enabled"`
+	Settings    map[string]any `json:"settings" yaml:"settings"`
+	Description string         `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 // ConsoleNotifierSettings represents console notifier settings
 type ConsoleNotifierSettings struct {
-	Style string `json:"style" yaml:"style"` // "plain" or "stylized"
-	Color bool   `json:"color" yaml:"color"` // enable/disable colors
+	Style string `json:"style" yaml:"style"`                   // "plain" or "stylized"
+	Color bool   `json:"color" yaml:"color"`                   // enable/disable colors
+	Bold  bool   `json:"bold,omitempty" yaml:"bold,omitempty"` // optional explicit bold toggle
 }
 
 // SlackNotifierSettings represents Slack notifier settings
@@ -95,11 +101,11 @@ type SlackNotifierSettings struct {
 
 // WebhookNotification represents an incoming webhook notification
 type WebhookNotification struct {
-	Type      string                 `json:"type"`
-	Target    string                 `json:"target"`
-	Message   string                 `json:"message"`
-	Timestamp time.Time              `json:"timestamp"`
-	Data      map[string]interface{} `json:"data,omitempty"`
+	Type      string         `json:"type"`
+	Target    string         `json:"target"`
+	Message   string         `json:"message"`
+	Timestamp time.Time      `json:"timestamp"`
+	Data      map[string]any `json:"data,omitempty"`
 }
 
 // TargetState represents the current state of a target
@@ -145,7 +151,7 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 	// Check strategies
 	e.checkStrategies["http"] = NewHTTPCheckStrategy()
 
-	// Alert strategies - register default console
+	// Alert strategies - register default console (stylized + color)
 	e.alertStrategies["console"] = NewConsoleAlertStrategy()
 
 	// Register notifier-based strategies if stateManager is provided
@@ -156,15 +162,50 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 				switch notifier.Type {
 				case "slack":
 					if webhookURL, ok := notifier.Settings["webhook_url"].(string); ok && webhookURL != "" {
-						e.alertStrategies[name] = NewSlackAlertStrategy(webhookURL)
+						debug := false
+						if d, ok := notifier.Settings["debug"].(bool); ok {
+							debug = d
+						}
+						e.alertStrategies[name] = NewSlackAlertStrategyWithDebug(webhookURL, debug)
 						// Register a notification strategy with the same name for hooks
 						e.notificationStrategies[name] = NewSlackNotificationStrategy(webhookURL)
 					}
-				case "console":
-					// Console is already registered as default
-					if name != "console" {
-						e.alertStrategies[name] = NewConsoleAlertStrategy()
+				case "email":
+					// expected settings: smtp_host, smtp_port, username, password_env, to, debug (optional)
+					host, _ := notifier.Settings["smtp_host"].(string)
+					to, _ := notifier.Settings["to"].(string)
+					username, _ := notifier.Settings["username"].(string)
+					passwordEnv, _ := notifier.Settings["password_env"].(string)
+					debug := false
+					if d, ok := notifier.Settings["debug"].(bool); ok {
+						debug = d
 					}
+					var port int
+					if v, ok := notifier.Settings["smtp_port"].(int); ok {
+						port = v
+					} else if vf, ok := notifier.Settings["smtp_port"].(float64); ok {
+						port = int(vf)
+					}
+					if strings.TrimSpace(host) != "" && port > 0 && strings.TrimSpace(username) != "" && strings.TrimSpace(to) != "" && strings.TrimSpace(passwordEnv) != "" {
+						pwd := os.Getenv(passwordEnv)
+						if strings.TrimSpace(pwd) == "" {
+							fmt.Printf("%s email notifier '%s' requires env %s to be set\n", qc.Colorize("❌ Error:", qc.ColorRed), name, passwordEnv)
+							os.Exit(1)
+						}
+						e.alertStrategies[name] = NewEmailAlertStrategyWithDebug(host, port, username, pwd, to, debug)
+						e.notificationStrategies[name] = NewEmailNotificationStrategy(host, port, username, pwd, to)
+					}
+				case "console":
+					// Respect console notifier settings (style/color)
+					style := "stylized"
+					color := true
+					if s, ok := notifier.Settings["style"].(string); ok && s != "" {
+						style = s
+					}
+					if c, ok := notifier.Settings["color"].(bool); ok {
+						color = c
+					}
+					e.alertStrategies[name] = NewConsoleAlertStrategyWithSettings(style, color)
 					e.notificationStrategies[name] = NewConsoleNotificationStrategy()
 				}
 			}
@@ -183,10 +224,8 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 		}
 	}
 
-	// Ensure default console notification exists
-	if _, ok := e.notificationStrategies["console"]; !ok {
-		e.notificationStrategies["console"] = NewConsoleNotificationStrategy()
-	}
+	// Notification strategies
+	e.notificationStrategies["console"] = NewConsoleNotificationStrategy()
 }
 
 // initializeTargets initializes targets from configuration

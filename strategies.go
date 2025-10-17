@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/smtp"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -172,7 +174,10 @@ func (h *HTTPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRe
 	var responseSize int64
 	if resp.Body != nil {
 		// We'll estimate size from Content-Length header
-		responseSize = max(0, resp.ContentLength)
+		responseSize = resp.ContentLength
+		if responseSize < 0 {
+			responseSize = 0 // Unknown size
+		}
 	}
 
 	// Check if status code matches allowed status codes
@@ -193,28 +198,53 @@ func (h *HTTPCheckStrategy) Name() string {
 }
 
 // ConsoleAlertStrategy implements console-based alerting
-type ConsoleAlertStrategy struct{}
+type ConsoleAlertStrategy struct {
+	style string // "plain" or "stylized"
+	color bool   // enable/disable color output
+}
 
 // NewConsoleAlertStrategy creates a new console alert strategy
 func NewConsoleAlertStrategy() *ConsoleAlertStrategy {
-	return &ConsoleAlertStrategy{}
+	return &ConsoleAlertStrategy{style: "stylized", color: true}
+}
+
+// NewConsoleAlertStrategyWithSettings constructs a console alert strategy honoring settings
+func NewConsoleAlertStrategyWithSettings(style string, color bool) *ConsoleAlertStrategy {
+	if strings.TrimSpace(style) == "" {
+		style = "stylized"
+	}
+	return &ConsoleAlertStrategy{style: style, color: color}
+}
+
+func (c *ConsoleAlertStrategy) format(text string, colorCode string, bold bool) string {
+	s := text
+	if c.color && colorCode != "" {
+		s = qc.Colorize(s, colorCode)
+	}
+	if bold && strings.EqualFold(c.style, "stylized") {
+		// Enable bold without resetting color; 22 disables bold only
+		s = "\x1b[1m" + s + "\x1b[22m"
+	}
+	return s
 }
 
 // SendAlert sends an alert to the console
 func (c *ConsoleAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
 	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
+	title := c.format("🚨 ALERT:", qc.ColorRed, true)
+	name := c.format(target.Name, qc.ColorRed, true)
 	fmt.Printf("%s %s is DOWN - %s (Status: %d, Time: %v)\n",
-		qc.Colorize("🚨 ALERT:", qc.ColorRed),
-		qc.Colorize(target.Name, qc.ColorRed),
+		title,
+		name,
 		target.URL,
 		result.StatusCode,
 		result.ResponseTime)
-	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
-	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
-	fmt.Printf("   %s %v\n", qc.Colorize("Response Time:", qc.ColorCyan), result.ResponseTime)
+	fmt.Printf("   %s %s\n", c.format("Target:", qc.ColorCyan, true), target.Name)
+	fmt.Printf("   %s %s\n", c.format("URL:", qc.ColorCyan, true), target.URL)
+	fmt.Printf("   %s %s\n", c.format("Time:", qc.ColorCyan, true), timestamp)
+	fmt.Printf("   %s %v\n", c.format("Response Time:", qc.ColorCyan, true), result.ResponseTime)
 	if result.ResponseSize > 0 {
-		fmt.Printf("   %s %d bytes\n", qc.Colorize("Response Size:", qc.ColorCyan), result.ResponseSize)
+		fmt.Printf("   %s %d bytes\n", c.format("Response Size:", qc.ColorCyan, true), result.ResponseSize)
 	}
 	fmt.Println()
 	return nil
@@ -223,18 +253,20 @@ func (c *ConsoleAlertStrategy) SendAlert(ctx context.Context, target *Target, re
 // SendAllClear sends an all-clear notification to the console
 func (c *ConsoleAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
 	timestamp := result.Timestamp.Format("2006-01-02 15:04:05")
+	title := c.format("✅ ALL CLEAR:", qc.ColorGreen, true)
+	name := c.format(target.Name, qc.ColorGreen, true)
 	fmt.Printf("%s %s is UP - %s (Status: %d, Time: %v)\n",
-		qc.Colorize("✅ ALL CLEAR:", qc.ColorGreen),
-		qc.Colorize(target.Name, qc.ColorGreen),
+		title,
+		name,
 		target.URL,
 		result.StatusCode,
 		result.ResponseTime)
-	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
-	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
-	fmt.Printf("   %s %v\n", qc.Colorize("Response Time:", qc.ColorCyan), result.ResponseTime)
+	fmt.Printf("   %s %s\n", c.format("Target:", qc.ColorCyan, true), target.Name)
+	fmt.Printf("   %s %s\n", c.format("URL:", qc.ColorCyan, true), target.URL)
+	fmt.Printf("   %s %s\n", c.format("Time:", qc.ColorCyan, true), timestamp)
+	fmt.Printf("   %s %v\n", c.format("Response Time:", qc.ColorCyan, true), result.ResponseTime)
 	if result.ResponseSize > 0 {
-		fmt.Printf("   %s %d bytes\n", qc.Colorize("Response Size:", qc.ColorCyan), result.ResponseSize)
+		fmt.Printf("   %s %d bytes\n", c.format("Response Size:", qc.ColorCyan, true), result.ResponseSize)
 	}
 	fmt.Println()
 	return nil
@@ -249,19 +281,19 @@ func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, target *
 	}
 
 	fmt.Printf("%s %s response size %s significantly - %s (Size: %d bytes, Avg: %.0f bytes, Change: %.1f%%)\n",
-		qc.Colorize("📏 SIZE ALERT:", qc.ColorYellow),
-		qc.Colorize(target.Name, qc.ColorYellow),
+		c.format("📏 SIZE ALERT:", qc.ColorYellow, true),
+		c.format(target.Name, qc.ColorYellow, true),
 		changeDirection,
 		target.URL,
 		result.ResponseSize,
 		avgSize,
 		changePercent*100)
-	fmt.Printf("   %s %s\n", qc.Colorize("Target:", qc.ColorCyan), target.Name)
-	fmt.Printf("   %s %s\n", qc.Colorize("URL:", qc.ColorCyan), target.URL)
-	fmt.Printf("   %s %s\n", qc.Colorize("Time:", qc.ColorCyan), timestamp)
-	fmt.Printf("   %s %d bytes\n", qc.Colorize("Current Size:", qc.ColorCyan), result.ResponseSize)
-	fmt.Printf("   %s %.0f bytes\n", qc.Colorize("Average Size:", qc.ColorCyan), avgSize)
-	fmt.Printf("   %s %.1f%%\n", qc.Colorize("Change:", qc.ColorCyan), changePercent*100)
+	fmt.Printf("   %s %s\n", c.format("Target:", qc.ColorCyan, true), target.Name)
+	fmt.Printf("   %s %s\n", c.format("URL:", qc.ColorCyan, true), target.URL)
+	fmt.Printf("   %s %s\n", c.format("Time:", qc.ColorCyan, true), timestamp)
+	fmt.Printf("   %s %d bytes\n", c.format("Current Size:", qc.ColorCyan, true), result.ResponseSize)
+	fmt.Printf("   %s %.0f bytes\n", c.format("Average Size:", qc.ColorCyan, true), avgSize)
+	fmt.Printf("   %s %.1f%%\n", c.format("Change:", qc.ColorCyan, true), changePercent*100)
 	fmt.Println()
 	return nil
 }
@@ -269,6 +301,14 @@ func (c *ConsoleAlertStrategy) SendSizeChangeAlert(ctx context.Context, target *
 // Name returns the strategy name
 func (c *ConsoleAlertStrategy) Name() string {
 	return "console"
+}
+
+// SendStartupMessage prints a stylized startup line to the console
+func (c *ConsoleAlertStrategy) SendStartupMessage(version string, targetCount int) {
+	title := c.format("🚀 Quick Watch", qc.ColorCyan, true)
+	v := c.format(version, qc.ColorWhite, true)
+	t := c.format(fmt.Sprintf("%d", targetCount), qc.ColorWhite, true)
+	fmt.Printf("%s started - Version: %s, Targets: %s\n", title, v, t)
 }
 
 // WebhookAlertStrategy implements webhook-based alerting
@@ -289,7 +329,7 @@ func NewWebhookAlertStrategy(webhookURL string) *WebhookAlertStrategy {
 
 // SendAlert sends an alert via webhook
 func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]any{
+	payload := map[string]interface{}{
 		"type":          "alert",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -299,12 +339,12 @@ func (w *WebhookAlertStrategy) SendAlert(ctx context.Context, target *Target, re
 		"status_code":   result.StatusCode,
 		"response_time": result.ResponseTime.String(),
 	}
-	return w.sendWebhook(payload)
+	return w.sendWebhook(ctx, payload)
 }
 
 // SendAllClear sends an all-clear notification via webhook
 func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
-	payload := map[string]any{
+	payload := map[string]interface{}{
 		"type":          "all_clear",
 		"target":        target.Name,
 		"url":           target.URL,
@@ -313,14 +353,14 @@ func (w *WebhookAlertStrategy) SendAllClear(ctx context.Context, target *Target,
 		"status_code":   result.StatusCode,
 		"response_time": result.ResponseTime.String(),
 	}
-	return w.sendWebhook(payload)
+	return w.sendWebhook(ctx, payload)
 }
 
 // sendWebhook sends a webhook notification
-func (w *WebhookAlertStrategy) sendWebhook(payload map[string]any) error {
+func (w *WebhookAlertStrategy) sendWebhook(ctx context.Context, payload map[string]interface{}) error {
 	// This is a simplified implementation
 	// In a real implementation, you'd marshal the payload to JSON and send it
-	fmt.Printf("📡 WEBHOOK: Sending notification to %s\n", w.webhookURL)
+	fmt.Printf("%s Sending notification to %s\n", qc.Colorize("📡 WEBHOOK:", qc.ColorBlue), w.webhookURL)
 	fmt.Printf("   Payload: %+v\n", payload)
 	return nil
 }
@@ -334,6 +374,7 @@ func (w *WebhookAlertStrategy) Name() string {
 type SlackAlertStrategy struct {
 	webhookURL string
 	client     *http.Client
+	debug      bool
 }
 
 // NewSlackAlertStrategy creates a new Slack alert strategy
@@ -343,6 +384,18 @@ func NewSlackAlertStrategy(webhookURL string) *SlackAlertStrategy {
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		debug: false,
+	}
+}
+
+// NewSlackAlertStrategyWithDebug creates a new Slack alert strategy with debug option
+func NewSlackAlertStrategyWithDebug(webhookURL string, debug bool) *SlackAlertStrategy {
+	return &SlackAlertStrategy{
+		webhookURL: webhookURL,
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+		debug: debug,
 	}
 }
 
@@ -351,14 +404,14 @@ func (s *SlackAlertStrategy) SendAlert(ctx context.Context, target *Target, resu
 	message := fmt.Sprintf("🚨 *%s* is DOWN\n• URL: %s\n• Status: %d\n• Time: %v\n• Error: %s",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime, result.Error)
 
-	payload := map[string]any{
+	payload := map[string]interface{}{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]any{
+		"attachments": []map[string]interface{}{
 			{
 				"color":     "danger",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]any{
+				"fields": []map[string]interface{}{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -399,14 +452,14 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 	message := fmt.Sprintf("✅ *%s* is UP\n• URL: %s\n• Status: %d\n• Time: %v",
 		target.Name, target.URL, result.StatusCode, result.ResponseTime)
 
-	payload := map[string]any{
+	payload := map[string]interface{}{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]any{
+		"attachments": []map[string]interface{}{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]any{
+				"fields": []map[string]interface{}{
 					{
 						"title": "Target",
 						"value": fmt.Sprintf("*%s*", target.Name),
@@ -443,10 +496,15 @@ func (s *SlackAlertStrategy) SendAllClear(ctx context.Context, target *Target, r
 }
 
 // sendSlackWebhook sends a notification to Slack
-func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]any) error {
+func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[string]interface{}) error {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal Slack payload: %v", err)
+	}
+
+	if s.debug {
+		fmt.Printf("🐛 SLACK DEBUG: Sending to %s\n", sanitizeSlackWebhookURL(s.webhookURL))
+		fmt.Printf("🐛 SLACK DEBUG: Payload: %s\n", string(jsonData))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", s.webhookURL, bytes.NewBuffer(jsonData))
@@ -456,17 +514,29 @@ func (s *SlackAlertStrategy) sendSlackWebhook(ctx context.Context, payload map[s
 
 	req.Header.Set("Content-Type", "application/json")
 
+	if s.debug {
+		fmt.Printf("🐛 SLACK DEBUG: Request headers: %+v\n", req.Header)
+	}
+
 	resp, err := s.client.Do(req)
 	if err != nil {
+		if s.debug {
+			fmt.Printf("🐛 SLACK DEBUG: Request failed: %v\n", err)
+		}
 		return fmt.Errorf("failed to send Slack webhook: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Slack webhook returned status %d", resp.StatusCode)
+	if s.debug {
+		fmt.Printf("🐛 SLACK DEBUG: Response status: %d\n", resp.StatusCode)
+		fmt.Printf("🐛 SLACK DEBUG: Response headers: %+v\n", resp.Header)
 	}
 
-	fmt.Printf("📡 SLACK: Sent notification to %s\n", s.webhookURL)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("slack webhook returned status %d", resp.StatusCode)
+	}
+
+	fmt.Printf("📡 SLACK: Sent notification to %s\n", sanitizeSlackWebhookURL(s.webhookURL))
 	return nil
 }
 
@@ -475,14 +545,14 @@ func (s *SlackAlertStrategy) SendStartupMessage(ctx context.Context, version str
 	message := fmt.Sprintf("🚀 *Quick Watch* started successfully\n• Version: %s\n• Targets: %d\n• Timestamp: %s",
 		version, targetCount, time.Now().Format("2006-01-02 15:04:05"))
 
-	payload := map[string]any{
+	payload := map[string]interface{}{
 		"text":   message,
 		"mrkdwn": true,
-		"attachments": []map[string]any{
+		"attachments": []map[string]interface{}{
 			{
 				"color":     "good",
 				"mrkdwn_in": []string{"fields"},
-				"fields": []map[string]any{
+				"fields": []map[string]interface{}{
 					{
 						"title": "Service",
 						"value": "*Quick Watch*",
@@ -594,9 +664,9 @@ func (s *SlackNotificationStrategy) HandleNotification(ctx context.Context, noti
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Slack webhook returned status %d", resp.StatusCode)
+		return fmt.Errorf("slack webhook returned status %d", resp.StatusCode)
 	}
-	fmt.Printf("📡 SLACK: Sent generic notification to %s\n", s.webhookURL)
+	fmt.Printf("📡 SLACK: Sent generic notification to %s\n", sanitizeSlackWebhookURL(s.webhookURL))
 	return nil
 }
 
@@ -627,15 +697,225 @@ func NewEmailNotificationStrategy(smtpHost string, smtpPort int, username, passw
 
 // HandleNotification handles incoming notifications by sending email
 func (e *EmailNotificationStrategy) HandleNotification(ctx context.Context, notification *WebhookNotification) error {
-	// This is a simplified implementation
-	// In a real implementation, you'd use an SMTP client to send emails
-	fmt.Printf("📧 EMAIL: Sending notification to %s\n", e.to)
-	fmt.Printf("   Subject: %s - %s\n", notification.Type, notification.Target)
-	fmt.Printf("   Message: %s\n", notification.Message)
-	return nil
+	// Build a simple HTML email
+	subject := fmt.Sprintf("%s — %s", safeNonEmpty(notification.Type, "Notification"), notification.Target)
+	body := fmt.Sprintf(
+		"<html><body><h3>%s</h3><p><strong>Target:</strong> %s</p><p><strong>Message:</strong> %s</p><p><strong>Timestamp:</strong> %s</p></body></html>",
+		safeNonEmpty(notification.Type, "Notification"),
+		notification.Target,
+		notification.Message,
+		notification.Timestamp.Format("2006-01-02 15:04:05"),
+	)
+	// EmailNotificationStrategy doesn't have debug flag, use false
+	return sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, false)
 }
 
 // Name returns the strategy name
 func (e *EmailNotificationStrategy) Name() string {
 	return "email"
+}
+
+// EmailAlertStrategy implements email-based alerting for target up/down
+type EmailAlertStrategy struct {
+	smtpHost string
+	smtpPort int
+	username string
+	password string
+	to       string
+	debug    bool
+}
+
+// NewEmailAlertStrategy creates a new email alert strategy
+func NewEmailAlertStrategy(smtpHost string, smtpPort int, username, password, to string) *EmailAlertStrategy {
+	return &EmailAlertStrategy{
+		smtpHost: smtpHost,
+		smtpPort: smtpPort,
+		username: username,
+		password: password,
+		to:       to,
+		debug:    false,
+	}
+}
+
+// NewEmailAlertStrategyWithDebug creates a new email alert strategy with debug option
+func NewEmailAlertStrategyWithDebug(smtpHost string, smtpPort int, username, password, to string, debug bool) *EmailAlertStrategy {
+	return &EmailAlertStrategy{
+		smtpHost: smtpHost,
+		smtpPort: smtpPort,
+		username: username,
+		password: password,
+		to:       to,
+		debug:    debug,
+	}
+}
+
+// SendAlert sends a DOWN alert via email with a simple HTML body
+func (e *EmailAlertStrategy) SendAlert(ctx context.Context, target *Target, result *CheckResult) error {
+	subject := fmt.Sprintf("🚨 %s is DOWN", target.Name)
+	body := fmt.Sprintf(
+		"<html><body>"+
+			"<h2 style=\"color:#c62828\">%s is DOWN</h2>"+
+			"<ul>"+
+			"<li><strong>URL:</strong> %s</li>"+
+			"<li><strong>Status:</strong> %d</li>"+
+			"<li><strong>Response Time:</strong> %s</li>"+
+			"<li><strong>Error:</strong> %s</li>"+
+			"<li><strong>Timestamp:</strong> %s</li>"+
+			"</ul>"+
+			"</body></html>",
+		target.Name,
+		target.URL,
+		result.StatusCode,
+		result.ResponseTime.String(),
+		result.Error,
+		result.Timestamp.Format("2006-01-02 15:04:05"),
+	)
+	return sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, e.debug)
+}
+
+// SendAllClear sends an UP notification via email with a simple HTML body
+func (e *EmailAlertStrategy) SendAllClear(ctx context.Context, target *Target, result *CheckResult) error {
+	subject := fmt.Sprintf("✅ %s is UP", target.Name)
+	body := fmt.Sprintf(
+		"<html><body>"+
+			"<h2 style=\"color:#2e7d32\">%s is UP</h2>"+
+			"<ul>"+
+			"<li><strong>URL:</strong> %s</li>"+
+			"<li><strong>Status:</strong> %d</li>"+
+			"<li><strong>Response Time:</strong> %s</li>"+
+			"<li><strong>Timestamp:</strong> %s</li>"+
+			"</ul>"+
+			"</body></html>",
+		target.Name,
+		target.URL,
+		result.StatusCode,
+		result.ResponseTime.String(),
+		result.Timestamp.Format("2006-01-02 15:04:05"),
+	)
+	return sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, e.debug)
+}
+
+// Name returns the strategy name
+func (e *EmailAlertStrategy) Name() string {
+	return "email"
+}
+
+// SendStartupMessage sends a startup notification via email
+func (e *EmailAlertStrategy) SendStartupMessage(ctx context.Context, version string, targetCount int) error {
+	subject := "🚀 Quick Watch Started"
+	body := fmt.Sprintf(
+		"<html><body>"+
+			"<h2 style=\"color:#1976d2\">🚀 Quick Watch Started</h2>"+
+			"<ul>"+
+			"<li><strong>Version:</strong> %s</li>"+
+			"<li><strong>Targets:</strong> %d</li>"+
+			"<li><strong>Timestamp:</strong> %s</li>"+
+			"</ul>"+
+			"<p>Quick Watch monitoring service has started successfully and is now monitoring your configured targets.</p>"+
+			"</body></html>",
+		version,
+		targetCount,
+		time.Now().Format("2006-01-02 15:04:05"),
+	)
+	err := sendSMTPHTML(e.smtpHost, e.smtpPort, e.username, e.password, e.username, e.to, subject, body, e.debug)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("📧 EMAIL: Startup notification sent to %s\n", e.to)
+	return nil
+}
+
+// sendSMTPHTML sends an HTML email using net/smtp with minimal dependencies
+func sendSMTPHTML(host string, port int, username, password, from, to, subject, htmlBody string, debug bool) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
+
+	if debug {
+		fmt.Printf("🐛 EMAIL DEBUG: Connecting to SMTP server %s:%d\n", host, port)
+		fmt.Printf("🐛 EMAIL DEBUG: From: %s, To: %s\n", from, to)
+		fmt.Printf("🐛 EMAIL DEBUG: Subject: %s\n", subject)
+	}
+
+	// Build headers and body per RFC 5322
+	headers := map[string]string{
+		"From":         from,
+		"To":           to,
+		"Subject":      subject,
+		"MIME-Version": "1.0",
+		"Content-Type": "text/html; charset=\"UTF-8\"",
+	}
+	var msgBuilder strings.Builder
+	for k, v := range headers {
+		msgBuilder.WriteString(k)
+		msgBuilder.WriteString(": ")
+		msgBuilder.WriteString(v)
+		msgBuilder.WriteString("\r\n")
+	}
+	msgBuilder.WriteString("\r\n")
+	msgBuilder.WriteString(htmlBody)
+
+	if debug {
+		fmt.Printf("🐛 EMAIL DEBUG: Message size: %d bytes\n", msgBuilder.Len())
+		fmt.Printf("🐛 EMAIL DEBUG: Authenticating as %s\n", username)
+	}
+
+	auth := smtp.PlainAuth("", username, password, host)
+	if err := smtp.SendMail(addr, auth, from, []string{to}, []byte(msgBuilder.String())); err != nil {
+		if debug {
+			fmt.Printf("🐛 EMAIL DEBUG: Send failed: %v\n", err)
+		}
+		return fmt.Errorf("failed to send email via smtp: %w", err)
+	}
+
+	if debug {
+		fmt.Printf("🐛 EMAIL DEBUG: Email sent successfully\n")
+	}
+
+	fmt.Printf("📧 EMAIL sent to %s (subject: %s)\n", to, subject)
+	return nil
+}
+
+// safeNonEmpty returns fallback when s is empty
+func safeNonEmpty(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+// sanitizeSlackWebhookURL hides the middle portion of a Slack webhook URL, keeping
+// the first three characters after /services/ and the last three characters of the URL
+func sanitizeSlackWebhookURL(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if parsed.Host != "hooks.slack.com" {
+		return raw
+	}
+	if !strings.HasPrefix(parsed.Path, "/services/") {
+		return raw
+	}
+	// take first 3 chars of the first segment after /services/
+	rest := strings.TrimPrefix(parsed.Path, "/services/")
+	rest = strings.TrimLeft(rest, "/")
+	firstSeg := rest
+	if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+		firstSeg = rest[:idx]
+	}
+	first3 := firstSeg
+	if len(first3) > 3 {
+		first3 = first3[:3]
+	}
+	// last 3 chars of the entire raw URL (to match provided example)
+	last3 := ""
+	trimmed := strings.TrimRight(raw, "/")
+	if len(trimmed) >= 3 {
+		last3 = trimmed[len(trimmed)-3:]
+	} else {
+		last3 = trimmed
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/services/" + first3 + "***" + last3
 }

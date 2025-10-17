@@ -12,11 +12,10 @@ import (
 
 // Server represents the quick_watch server
 type Server struct {
-	stateManager  *StateManager
-	engine        *TargetEngine
-	webhookServer *WebhookServer
-	server        *http.Server
-	state         string // "stopped", "starting", "running", "stopping"
+	stateManager *StateManager
+	engine       *TargetEngine
+	server       *http.Server
+	state        string // "stopped", "starting", "running", "stopping"
 }
 
 // NewServer creates a new quick_watch server
@@ -52,16 +51,18 @@ func (s *Server) Start(ctx context.Context) error {
 		s.sendStartupMessage(ctx)
 	}
 
-	// Start webhook server if configured
-	if settings.WebhookPort > 0 {
-		s.webhookServer = NewWebhookServer(settings.WebhookPort, settings.WebhookPath, s.engine, s.stateManager)
-		if err := s.webhookServer.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start webhook server: %v", err)
-		}
-	}
-
-	// Set up HTTP server for API
+	// Set up unified HTTP server with all routes
 	mux := http.NewServeMux()
+
+	// Webhook endpoints (from legacy WebhookServer)
+	webhookPath := settings.WebhookPath
+	if webhookPath == "" {
+		webhookPath = "/webhook"
+	}
+	mux.HandleFunc(webhookPath, s.handleWebhook)
+
+	// Register dynamic hook routes
+	s.registerHookRoutes(mux)
 
 	// API endpoints
 	mux.HandleFunc("/api/targets", s.handleTargets)
@@ -73,20 +74,33 @@ func (s *Server) Start(ctx context.Context) error {
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/info", s.handleInfo)
+	mux.HandleFunc("/status", s.handleWebhookStatus)
 
 	// Root endpoint
 	mux.HandleFunc("/", s.handleRoot)
 
+	// Use configured port or default to 8080
+	port := settings.WebhookPort
+	if port == 0 {
+		port = 8080
+	}
+
 	s.server = &http.Server{
-		Addr:    ":8081", // Default API port (8080 is used by webhook)
+		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
 	}
 
 	s.state = "running"
 
+	// Log unified server startup
+	log.Printf("Starting Quick Watch unified server on port %d", port)
+	log.Printf("Webhook endpoint: http://0.0.0.0:%d%s", port, webhookPath)
+	log.Printf("API endpoints: http://0.0.0.0:%d/api/*", port)
+	log.Printf("Health check: http://0.0.0.0:%d/health", port)
+	log.Printf("Status: http://0.0.0.0:%d/status", port)
+
 	// Start server in goroutine
 	go func() {
-		log.Printf("Starting quick_watch server on port 8080")
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Server error: %v", err)
 		}
@@ -105,14 +119,150 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	if s.webhookServer != nil {
-		if err := s.webhookServer.Stop(ctx); err != nil {
-			return err
+	s.state = "stopped"
+	return nil
+}
+
+// registerHookRoutes registers named hook routes from state manager
+func (s *Server) registerHookRoutes(mux *http.ServeMux) {
+	if s.stateManager == nil {
+		return
+	}
+	hooks := s.stateManager.ListHooks()
+	for name, hook := range hooks {
+		// Always mount under /hooks/<name>
+		routePath := "/hooks/" + name
+		// Capture variables for handler closure
+		h := hook
+		mux.HandleFunc(routePath, func(wr http.ResponseWriter, r *http.Request) {
+			// Method check
+			if len(h.Methods) > 0 {
+				allowed := false
+				for _, m := range h.Methods {
+					if r.Method == m {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+			}
+
+			// Auth check
+			if h.Auth.BearerToken != "" {
+				auth := r.Header.Get("Authorization")
+				expected := "Bearer " + h.Auth.BearerToken
+				if auth != expected {
+					http.Error(wr, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+			if h.Auth.Username != "" || h.Auth.Password != "" {
+				u, p, ok := r.BasicAuth()
+				if !ok || u != h.Auth.Username || p != h.Auth.Password {
+					wr.Header().Set("WWW-Authenticate", "Basic realm=restricted")
+					http.Error(wr, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+
+			// Build notification from request
+			body := map[string]interface{}{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+
+			// Resolve message precedence: URL param 'msg' > body.msg > hook default
+			msg := h.Message
+			if q := r.URL.Query().Get("msg"); strings.TrimSpace(q) != "" {
+				msg = q
+				body["msg"] = q
+			} else if v, ok := body["msg"].(string); ok && strings.TrimSpace(v) != "" {
+				msg = v
+			}
+			if msg == "" {
+				msg = "hook triggered"
+			}
+			notification := &WebhookNotification{
+				Type:      "hook",
+				Target:    h.Name,
+				Message:   msg,
+				Timestamp: time.Now(),
+				Data:      body,
+			}
+
+			// Dispatch to selected notification strategies
+			if len(h.Alerts) == 0 {
+				h.Alerts = []string{"console"}
+			}
+			for _, alertName := range h.Alerts {
+				if strat, exists := s.engine.notificationStrategies[alertName]; exists {
+					if err := strat.HandleNotification(r.Context(), notification); err != nil {
+						log.Printf("Hook %s notify via %s failed: %v", h.Name, alertName, err)
+					}
+				}
+			}
+
+			wr.WriteHeader(http.StatusOK)
+			wr.Write([]byte("OK"))
+		})
+		log.Printf("Hook route registered: %s -> alerts=%v", routePath, hook.Alerts)
+	}
+}
+
+// handleWebhook handles incoming webhook notifications
+func (s *Server) handleWebhook(wr http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(wr, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var notification WebhookNotification
+	if err := json.NewDecoder(r.Body).Decode(&notification); err != nil {
+		http.Error(wr, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Set timestamp if not provided
+	if notification.Timestamp.IsZero() {
+		notification.Timestamp = time.Now()
+	}
+
+	// Handle the notification
+	if err := s.engine.HandleWebhookNotification(r.Context(), &notification); err != nil {
+		log.Printf("Error handling webhook notification: %v", err)
+		http.Error(wr, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	wr.WriteHeader(http.StatusOK)
+	wr.Write([]byte("OK"))
+}
+
+// handleWebhookStatus handles status requests (webhook-style endpoint)
+func (s *Server) handleWebhookStatus(wr http.ResponseWriter, r *http.Request) {
+	wr.Header().Set("Content-Type", "application/json")
+	wr.WriteHeader(http.StatusOK)
+
+	targets := s.engine.GetTargetStatus()
+	status := map[string]interface{}{
+		"timestamp": time.Now(),
+		"service":   "quick_watch",
+		"targets":   make([]map[string]interface{}, len(targets)),
+	}
+
+	targetList := status["targets"].([]map[string]interface{})
+	for i, state := range targets {
+		targetList[i] = map[string]interface{}{
+			"name":       state.Target.Name,
+			"url":        state.Target.URL,
+			"is_down":    state.IsDown,
+			"down_since": state.DownSince,
+			"last_check": state.LastCheck,
 		}
 	}
 
-	s.state = "stopped"
-	return nil
+	json.NewEncoder(wr).Encode(status)
 }
 
 // handleRoot handles the root endpoint
@@ -165,7 +315,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	response := map[string]any{
+	response := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
@@ -194,16 +344,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	targets := s.engine.GetTargetStatus()
-	status := map[string]any{
+	status := map[string]interface{}{
 		"timestamp": time.Now(),
 		"service":   "quick_watch",
 		"state":     s.state,
-		"targets":   make([]map[string]any, len(targets)),
+		"targets":   make([]map[string]interface{}, len(targets)),
 	}
 
-	targetList := status["targets"].([]map[string]any)
+	targetList := status["targets"].([]map[string]interface{})
 	for i, state := range targets {
-		targetList[i] = map[string]any{
+		targetList[i] = map[string]interface{}{
 			"name":       state.Target.Name,
 			"url":        state.Target.URL,
 			"is_down":    state.IsDown,
@@ -240,7 +390,7 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListTargets lists all targets
-func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -372,9 +522,16 @@ func (s *Server) sendStartupMessage(ctx context.Context) {
 				} else {
 					log.Printf("Startup message sent to %s successfully", alertName)
 				}
-			} else if _, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
-				// For console alerts, we can just log the startup message
-				log.Printf("🚀 Quick Watch started - Version: %s, Targets: %d", version, targetCount)
+			} else if console, ok := alertStrategy.(*ConsoleAlertStrategy); ok {
+				// For console alerts, print a stylized startup line
+				console.SendStartupMessage(version, targetCount)
+			} else if email, ok := alertStrategy.(*EmailAlertStrategy); ok {
+				// For email alerts, send startup email
+				if err := email.SendStartupMessage(ctx, version, targetCount); err != nil {
+					log.Printf("Failed to send startup message to %s: %v", alertName, err)
+				} else {
+					log.Printf("Startup message sent to %s successfully", alertName)
+				}
 			}
 		} else {
 			log.Printf("Warning: Startup alert '%s' not found or not available", alertName)

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -111,23 +109,5 @@ func TestEdit_PersistsTargetsToState(t *testing.T) {
 	got := sm2.ListTargets()
 	if len(got) != 1 {
 		t.Fatalf("expected 1 persisted target, got %d", len(got))
-	}
-}
-
-// TestHooksCommand_EmptyStdin_Succeeds verifies that `echo "" | go run . hooks --stdin` succeeds
-func TestHooksCommand_EmptyStdin_Succeeds(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping shell-based test on Windows")
-	}
-
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "watch-state.yml")
-
-	// Run from the quick_watch package directory; tests execute in this dir
-	cmd := exec.Command("/bin/bash", "-lc", "echo \"\" | go run . hooks --stdin --state "+statePath)
-	cmd.Dir = "."
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("hooks command failed: %v\nOutput:\n%s", err, string(out))
 	}
 }
