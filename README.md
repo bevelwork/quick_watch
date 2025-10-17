@@ -73,6 +73,16 @@ targets:
     threshold: 30  # seconds (30s)
     check_strategy: "http"
     alerts: "console"
+  
+  database-ports:
+    name: "Database Ports"
+    url: "db.example.com"
+    check_strategy: "tcp"
+    ports:
+      - 5432  # PostgreSQL
+      - 6379  # Redis
+    threshold: 30
+    alerts: "console"
 
 settings:
   webhook_port: 8080
@@ -83,6 +93,55 @@ settings:
 ```
 
 ## Advanced Features
+
+### TCP Port Checking
+
+Monitor TCP ports on servers to ensure services are accessible. Perfect for databases, SSH, custom services, and any TCP-based application.
+
+**Configuration:**
+```yaml
+targets:
+  - name: "Database Server Ports"
+    url: "db.example.com"  # Hostname or IP address
+    check_strategy: "tcp"
+    ports:
+      - 5432  # PostgreSQL
+      - 6379  # Redis
+    threshold: 30
+    alerts: "console slack-alerts"
+
+  - name: "SSH Access"
+    url: "server.example.com"
+    check_strategy: "tcp"
+    ports:
+      - 22
+    threshold: 15
+    alerts: "console"
+```
+
+**Features:**
+- ✅ Checks multiple ports simultaneously
+- ✅ Reports which ports are open/closed
+- ✅ 10-second timeout per port check
+- ✅ Works with hostnames or IP addresses
+- ✅ Response body shows port status for debugging
+- ✅ All standard alerting features (threshold, backoff, acknowledgements)
+
+**Example Alerts:**
+```
+🚨 ALERT: Database Server Ports is DOWN
+   Failed ports: [6379]
+   Successful: [5432]
+```
+
+**When to Use:**
+- Database connectivity monitoring (PostgreSQL, MySQL, MongoDB, Redis)
+- SSH access verification
+- Custom TCP services
+- Port availability checks
+- Firewall rule validation
+
+**Note**: For HTTP/HTTPS health checks, use `check_strategy: "http"` instead.
 
 ### Threshold-Based Alerting
 
@@ -557,11 +616,13 @@ targets:
     alerts: "console"
   
   database:
-    name: "Database"
-    url: "tcp://db.example.com:5432"
-    method: "TCP"
-    threshold: 60  # seconds (60s)
+    name: "Database Ports"
+    url: "db.example.com"
     check_strategy: "tcp"
+    ports:
+      - 5432  # PostgreSQL
+      - 6379  # Redis
+    threshold: 60  # seconds (60s)
     alerts: "slack"
 
 settings:

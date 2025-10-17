@@ -502,6 +502,14 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{2, "check_strategy: http", "# actively polls the URL"},
 		{2, "alerts: [console, slack-alerts]", alertsDesc},
 		{0, "", ""},
+		{0, "TCP Port Check Example (monitors server ports):", ""},
+		{0, "database-server:", ""},
+		{2, "url: db.example.com", "# hostname or IP address"},
+		{2, "check_strategy: tcp", "# checks TCP port connectivity"},
+		{2, "ports: [5432, 6379]", "# PostgreSQL, Redis"},
+		{2, "threshold: 30", "# seconds; default: 30"},
+		{2, "alerts: [console, slack-alerts]", alertsDesc},
+		{0, "", ""},
 		{0, "Webhook Target Example (manually triggered):", ""},
 		{0, "deployment-alert:", ""},
 		{2, "url: deployment-alert", "# identifier (not a real URL)"},
@@ -510,10 +518,11 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{2, "alerts: [console, slack-alerts, email]", "# who gets notified"},
 		{0, "", ""},
 		{0, "All available fields:", ""},
-		{0, "  method: GET", "# HTTP method (webhook ignores this)"},
-		{0, "  headers: {}", "# custom headers (webhook ignores this)"},
+		{0, "  method: GET", "# HTTP method (http only)"},
+		{0, "  headers: {}", "# custom headers (http only)"},
 		{0, "  threshold: 30", "# alert threshold in seconds"},
-		{0, "  status_codes: ['*']", "# acceptable codes (webhook ignores this)"},
+		{0, "  status_codes: ['*']", "# acceptable codes (http only)"},
+		{0, "  ports: [22, 80, 443]", "# ports to check (tcp only)"},
 		{0, "  duration: 300", "# auto-recovery seconds (webhook only)"},
 		{0, "", ""},
 	})
@@ -537,6 +546,7 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 	validCheckStrategies := map[string]bool{
 		"http":    true,
 		"webhook": true,
+		"tcp":     true,
 	}
 
 	// Get valid alert alerts from alerts
@@ -563,10 +573,22 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 			return fmt.Errorf("target %s: name is REQUIRED and cannot be empty", url)
 		}
 
-		// Validate URL format (basic check) - skip for webhook targets
-		if target.CheckStrategy != "webhook" {
+		// Validate URL format (basic check) - skip for webhook and tcp targets
+		if target.CheckStrategy != "webhook" && target.CheckStrategy != "tcp" {
 			if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
 				return fmt.Errorf("target %s: url must start with http:// or https://", url)
+			}
+		}
+
+		// Validate TCP-specific fields
+		if target.CheckStrategy == "tcp" {
+			if len(target.Ports) == 0 {
+				return fmt.Errorf("target %s: ports are required for tcp check strategy", url)
+			}
+			for _, port := range target.Ports {
+				if port < 1 || port > 65535 {
+					return fmt.Errorf("target %s: invalid port %d, must be between 1 and 65535", url, port)
+				}
 			}
 		}
 
@@ -582,7 +604,7 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 
 		// Validate check strategy if provided (don't apply default, just validate)
 		if target.CheckStrategy != "" && !validCheckStrategies[target.CheckStrategy] {
-			return fmt.Errorf("target %s: invalid check_strategy '%s', must be one of: http", url, target.CheckStrategy)
+			return fmt.Errorf("target %s: invalid check_strategy '%s', must be one of: http, tcp, webhook", url, target.CheckStrategy)
 		}
 	}
 	return nil

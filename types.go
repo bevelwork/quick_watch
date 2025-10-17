@@ -24,6 +24,7 @@ type Target struct {
 	SizeAlerts    SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
 	CheckStrategy string            `json:"check_strategy" yaml:"check_strategy,omitempty"`
 	Duration      int               `json:"duration" yaml:"duration,omitempty"` // For webhook targets: how long to stay "down" in seconds
+	Ports         []int             `json:"ports" yaml:"ports,omitempty"`       // For TCP check strategy: list of ports to check
 	// Preferred field supporting multiple alert strategies
 	Alerts []string `json:"alerts" yaml:"alerts,omitempty"`
 	// Legacy single alert strategy name (kept for backward compatibility)
@@ -220,6 +221,7 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 	// Check strategies
 	e.checkStrategies["http"] = NewHTTPCheckStrategy()
 	e.checkStrategies["webhook"] = NewWebhookCheckStrategy()
+	e.checkStrategies["tcp"] = NewTCPCheckStrategy()
 
 	// Alert strategies - register default console (stylized + color)
 	e.alertStrategies["console"] = NewConsoleAlertStrategy()

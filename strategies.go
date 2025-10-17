@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -258,6 +259,90 @@ func (w *WebhookCheckStrategy) Check(ctx context.Context, target *Target) (*Chec
 // Name returns the strategy name
 func (w *WebhookCheckStrategy) Name() string {
 	return "webhook"
+}
+
+// TCPCheckStrategy implements TCP port checking
+type TCPCheckStrategy struct {
+	timeout time.Duration
+}
+
+// NewTCPCheckStrategy creates a new TCP check strategy
+func NewTCPCheckStrategy() *TCPCheckStrategy {
+	return &TCPCheckStrategy{
+		timeout: 10 * time.Second,
+	}
+}
+
+// Check performs TCP port checks on all configured ports
+func (t *TCPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckResult, error) {
+	start := time.Now()
+
+	// If no ports specified, return error
+	if len(target.Ports) == 0 {
+		return &CheckResult{
+			Success:   false,
+			Error:     "No ports specified for TCP check",
+			Timestamp: start,
+		}, nil
+	}
+
+	// Check all ports
+	failedPorts := []int{}
+	successfulPorts := []int{}
+	var totalResponseTime time.Duration
+
+	for _, port := range target.Ports {
+		portStart := time.Now()
+		address := fmt.Sprintf("%s:%d", target.URL, port)
+
+		// Create dialer with timeout
+		dialer := net.Dialer{
+			Timeout: t.timeout,
+		}
+
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		portResponseTime := time.Since(portStart)
+		totalResponseTime += portResponseTime
+
+		if err != nil {
+			failedPorts = append(failedPorts, port)
+		} else {
+			conn.Close()
+			successfulPorts = append(successfulPorts, port)
+		}
+	}
+
+	responseTime := time.Since(start)
+	success := len(failedPorts) == 0
+
+	var errorMsg string
+	if !success {
+		errorMsg = fmt.Sprintf("Failed ports: %v", failedPorts)
+	}
+
+	// Build status message for response body
+	var statusMsg string
+	if success {
+		statusMsg = fmt.Sprintf("All %d port(s) open: %v", len(successfulPorts), successfulPorts)
+	} else {
+		statusMsg = fmt.Sprintf("Successful: %v, Failed: %v", successfulPorts, failedPorts)
+	}
+
+	return &CheckResult{
+		Success:      success,
+		StatusCode:   0, // Not applicable for TCP
+		ResponseTime: responseTime,
+		ResponseSize: 0, // Not applicable for TCP
+		Error:        errorMsg,
+		ContentType:  "text/plain",
+		ResponseBody: statusMsg,
+		Timestamp:    start,
+	}, nil
+}
+
+// Name returns the strategy name
+func (t *TCPCheckStrategy) Name() string {
+	return "tcp"
 }
 
 // ConsoleAlertStrategy implements console-based alerting

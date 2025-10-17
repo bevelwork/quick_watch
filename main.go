@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -105,20 +106,18 @@ func showHelp() {
 func handleEditCommand(args []string) {
 	stateFile := getStateFile(args)
 	// Support reading from stdin
-	for i := range args {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			sm := NewStateManager(stateFile)
-			if err := sm.Load(); err != nil {
-				log.Printf("Warning: Could not load existing state: %v", err)
-			}
-			applyTargetsYAML(sm, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		sm := NewStateManager(stateFile)
+		if err := sm.Load(); err != nil {
+			log.Printf("Warning: Could not load existing state: %v", err)
+		}
+		applyTargetsYAML(sm, data)
+		return
 	}
 	handleEditTargets(stateFile)
 }
@@ -618,16 +617,14 @@ func handleSettingsCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := range args {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			applySettingsYAML(stateManager, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		applySettingsYAML(stateManager, data)
+		return
 	}
 	// Edit settings
 	editSettings(stateManager)
@@ -675,16 +672,14 @@ func handleNotifiersCommand(args []string) {
 		fmt.Printf("%s Failed to load state: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
 		os.Exit(1)
 	}
-	for i := range args {
-		if args[i] == "--stdin" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
-				os.Exit(1)
-			}
-			applyAlertsYAML(stateManager, data)
-			return
+	if slices.Contains(args, "--stdin") {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("%s Failed to read stdin: %v\n", qc.Colorize("❌ Error:", qc.ColorRed), err)
+			os.Exit(1)
 		}
+		applyAlertsYAML(stateManager, data)
+		return
 	}
 	// Edit alerts
 	editAlerts(stateManager)
