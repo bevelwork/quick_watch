@@ -11,6 +11,7 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 - **Exponential Backoff Alerts**: Intelligent alert throttling with exponential backoff (5s, 10s, 20s, 40s, etc.) to prevent alert fatigue
 - **Alert Acknowledgements**: Acknowledge alerts to stop repeated notifications while investigating issues
 - **Status Reports**: Periodic summaries (hourly by default) showing active/resolved outages and metrics
+- **Target Detail Pages**: Beautiful web interface with real-time graphs, check history, and GitHub Actions-style terminal logs
 - **All-Clear Notifications**: Automatically notify when services recover
 - **Webhook Support**: Receive external notifications and handle them with configurable strategies
 - **Strategy Pattern**: Pluggable strategies for checks, alerts, and notifications
@@ -227,6 +228,127 @@ curl -X POST http://localhost:8080/trigger/status_report
 - Status reports must be enabled in settings (`status_report.enabled: true`)
 - At least one alert strategy must be configured (`status_report.alerts`)
 - Both GET and POST methods are accepted
+
+### Target Detail Pages
+
+Quick Watch provides a beautiful web interface for monitoring individual targets with real-time data visualization and historical logs.
+
+#### Accessing Target Pages
+
+When running in server mode, Quick Watch automatically creates web pages for each target:
+
+**Target List Page:**
+```
+http://localhost:8080/targets
+```
+- Shows all configured targets at a glance
+- Real-time status indicators (✅ Healthy, ❌ Down, 🔔 Acknowledged)
+- Quick navigation to individual target details
+- Auto-refreshes every 5 seconds
+
+**Individual Target Page:**
+```
+http://localhost:8080/targets/{target-name}
+```
+- Replace `{target-name}` with the URL-safe version of your target name
+- Example: `http://localhost:8080/targets/api-health`
+
+#### Features
+
+**📈 Real-Time Line Graph:**
+- Large, interactive response time graph using Chart.js
+- Shows the last 100 checks
+- Green line for response times
+- Red crosses mark failed checks
+- Time-based X-axis with automatic scaling
+- Hover for detailed timestamps and values
+- Automatically updates with new data every 5 seconds
+
+**📋 GitHub Actions-Style Terminal Log:**
+- Streaming log viewer showing all check history
+- Most recent entries at the bottom (like GitHub Actions)
+- Color-coded entries:
+  - ✅ Green: Successful checks
+  - ❌ Red: Failed checks
+  - 🔄 Blue: Recovery events
+  - 🔔 Yellow: Acknowledged failures
+- Each entry shows:
+  - Timestamp
+  - Status icon
+  - Response time or error message
+  - HTTP status code
+  - Alert count (if alerts were sent)
+  - Acknowledgement status
+- Auto-scrolls to show latest entries
+- Stores up to 1000 check entries per target
+
+**🎯 Target Information:**
+- Current status badge (Healthy/Down/Acknowledged)
+- Target URL
+- Back button to navigate to target list
+
+#### API Access
+
+You can also fetch target history as JSON for programmatic access:
+
+```bash
+curl http://localhost:8080/api/history/api-health
+```
+
+**Response:**
+```json
+{
+  "target": {
+    "name": "API Health",
+    "url": "https://api.example.com/health",
+    "is_down": false,
+    "url_safe": "api-health"
+  },
+  "history": [
+    {
+      "Timestamp": "2025-10-17T10:30:00Z",
+      "Success": true,
+      "ResponseTime": 145,
+      "ResponseSize": 2048,
+      "StatusCode": 200,
+      "ErrorMessage": "",
+      "AlertSent": false,
+      "AlertCount": 0,
+      "WasAcked": false,
+      "WasRecovered": false
+    }
+  ],
+  "count": 150
+}
+```
+
+#### URL-Safe Names
+
+Target names are automatically converted to URL-safe format:
+- Spaces, underscores, dots, slashes → hyphens
+- Converted to lowercase
+- Special characters removed
+- Examples:
+  - `"API Health"` → `"api-health"`
+  - `"My_Service.Prod"` → `"my-service-prod"`
+  - `"user/profile/api"` → `"user-profile-api"`
+
+#### Dark Mode Interface
+
+All target pages feature a modern, dark-themed interface inspired by GitHub's design:
+- Dark background (#0d1117) for reduced eye strain
+- Syntax-highlighted terminal output
+- Hover effects and smooth transitions
+- Responsive design for mobile and desktop
+- Professional color scheme matching modern developer tools
+
+#### Use Cases
+
+- **Operations Dashboard**: Bookmark `/targets` for quick access to all service status
+- **Incident Investigation**: View detailed check history and pinpoint when issues started
+- **Performance Analysis**: Analyze response time trends over time
+- **Team Collaboration**: Share target URLs with team members during incidents
+- **Integration**: Use the JSON API to build custom dashboards or alerts
 
 ## Strategy Patterns
 

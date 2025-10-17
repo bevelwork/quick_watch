@@ -96,6 +96,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// Trigger endpoints
 	mux.HandleFunc("/trigger/status_report", s.handleTriggerStatusReport)
 
+	// Target detail pages
+	mux.HandleFunc("/targets/", s.handleTargetDetail)
+	mux.HandleFunc("/targets", s.handleTargetList)
+	mux.HandleFunc("/api/history/", s.handleTargetHistoryAPI)
+
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/info", s.handleInfo)
@@ -125,6 +130,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	log.Printf("Webhook endpoint: %s%s", displayAddr, webhookPath)
 	log.Printf("API endpoints: %s/api/*", displayAddr)
+	log.Printf("Target pages: %s/targets", displayAddr)
 	log.Printf("Health check: %s/health", displayAddr)
 	log.Printf("Status: %s/status", displayAddr)
 
@@ -1600,4 +1606,656 @@ func (s *Server) showStatusReportError(w http.ResponseWriter, errorMessage strin
 </html>`, errorMessage)
 
 	w.Write([]byte(html))
+}
+
+// handleTargetList handles the /targets endpoint - shows all targets
+func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	targets := s.engine.GetTargetStatus()
+
+	// Build target cards
+	targetCards := ""
+	for _, state := range targets {
+		urlSafeName := state.GetURLSafeName()
+		statusClass := "healthy"
+		statusIcon := "✅"
+		statusText := "Healthy"
+
+		if state.IsDown {
+			statusClass = "down"
+			statusIcon = "❌"
+			statusText = "Down"
+			if state.AcknowledgedAt != nil {
+				statusIcon = "🔔"
+				statusText = "Down (Acknowledged)"
+			}
+		}
+
+		downtime := ""
+		if state.DownSince != nil {
+			duration := time.Since(*state.DownSince)
+			downtime = fmt.Sprintf(`<div class="downtime">Down for: %s</div>`, formatDuration(duration))
+		}
+
+		lastCheck := "Never"
+		responseTime := "N/A"
+		if state.LastCheck != nil {
+			lastCheck = state.LastCheck.Timestamp.Format("2006-01-02 15:04:05 MST")
+			if state.LastCheck.ResponseTime > 0 {
+				responseTime = fmt.Sprintf("%dms", state.LastCheck.ResponseTime)
+			}
+		}
+
+		targetCards += fmt.Sprintf(`
+			<a href="/targets/%s" class="target-card %s">
+				<div class="target-header">
+					<span class="status-icon">%s</span>
+					<h3>%s</h3>
+					<span class="status-badge %s">%s</span>
+				</div>
+				<div class="target-url">%s</div>
+				%s
+				<div class="target-meta">
+					<div><strong>Last Check:</strong> %s</div>
+					<div><strong>Response Time:</strong> %s</div>
+				</div>
+			</a>
+		`, urlSafeName, statusClass, statusIcon, state.Target.Name, statusClass, statusText, state.Target.URL, downtime, lastCheck, responseTime)
+	}
+
+	emptyState := ""
+	if len(targets) == 0 {
+		emptyState = `<div class="empty-state"><h2>No targets configured</h2><p>Add targets to your configuration to start monitoring</p></div>`
+	}
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick Watch - Targets</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        header {
+            margin-bottom: 40px;
+        }
+        h1 {
+            font-size: 32px;
+            color: #f0f6fc;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #8b949e;
+            font-size: 16px;
+        }
+        .target-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        .target-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 20px;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s ease;
+            display: block;
+        }
+        .target-card:hover {
+            border-color: #58a6ff;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        .target-card.down {
+            border-left: 4px solid #f85149;
+        }
+        .target-card.healthy {
+            border-left: 4px solid #3fb950;
+        }
+        .target-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        .status-icon {
+            font-size: 24px;
+        }
+        .target-header h3 {
+            flex: 1;
+            font-size: 18px;
+            color: #f0f6fc;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-badge.healthy {
+            background: rgba(63, 185, 80, 0.15);
+            color: #3fb950;
+        }
+        .status-badge.down {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+        }
+        .target-url {
+            color: #8b949e;
+            font-size: 14px;
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+        .downtime {
+            background: rgba(248, 81, 73, 0.1);
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+            color: #f85149;
+            font-size: 14px;
+        }
+        .target-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #8b949e;
+            padding-top: 12px;
+            border-top: 1px solid #30363d;
+        }
+        .target-meta strong {
+            color: #c9d1d9;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #8b949e;
+        }
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        @media (max-width: 768px) {
+            .target-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+    <script>
+        // Auto-refresh every 5 seconds
+        setTimeout(() => window.location.reload(), 5000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 Quick Watch Targets</h1>
+            <p class="subtitle">Monitoring %d target(s)</p>
+        </header>
+        
+        <div class="target-grid">
+            %s
+        </div>
+        
+        %s
+    </div>
+</body>
+</html>`, len(targets), targetCards, emptyState)
+
+	w.Write([]byte(html))
+}
+
+// handleTargetDetail handles the /targets/{name} endpoint - shows individual target details
+func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
+	// Extract target name from URL
+	urlSafeName := strings.TrimPrefix(r.URL.Path, "/targets/")
+	if urlSafeName == "" {
+		http.Redirect(w, r, "/targets", http.StatusSeeOther)
+		return
+	}
+
+	// Find target by URL-safe name
+	state := s.engine.FindTargetByURLSafeName(urlSafeName)
+	if state == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	// Get check history
+	history := state.GetCheckHistory()
+
+	// Build chart data (last 100 entries)
+	chartData := []map[string]interface{}{}
+	logEntries := ""
+
+	historyLen := len(history)
+	startIdx := 0
+	if historyLen > 100 {
+		startIdx = historyLen - 100
+	}
+
+	for i := startIdx; i < historyLen; i++ {
+		entry := history[i]
+		chartData = append(chartData, map[string]interface{}{
+			"timestamp":    entry.Timestamp.Unix() * 1000, // milliseconds for Chart.js
+			"success":      entry.Success,
+			"responseTime": entry.ResponseTime,
+		})
+
+		// Build log entry (GitHub Actions style - most recent at bottom)
+		statusIcon := "✅"
+		statusClass := "success"
+		if !entry.Success {
+			statusIcon = "❌"
+			statusClass = "error"
+		}
+		if entry.WasRecovered {
+			statusIcon = "🔄"
+			statusClass = "recovered"
+		}
+		if entry.WasAcked {
+			statusIcon = "🔔"
+		}
+
+		statusText := ""
+		if entry.Success {
+			statusText = fmt.Sprintf("OK - %dms", entry.ResponseTime)
+		} else {
+			statusText = "FAILED"
+		}
+
+		details := ""
+		if entry.StatusCode > 0 {
+			details += fmt.Sprintf("HTTP %d ", entry.StatusCode)
+		}
+		if entry.ErrorMessage != "" {
+			details += entry.ErrorMessage + " "
+		}
+		if entry.AlertSent {
+			details += fmt.Sprintf("Alert #%d sent ", entry.AlertCount)
+		}
+		if entry.WasAcked {
+			details += "Acknowledged "
+		}
+		if entry.WasRecovered {
+			details += "Recovered"
+		}
+
+		logEntries += fmt.Sprintf(`<div class="log-entry %s">
+			<span class="log-timestamp">%s</span>
+			<span class="log-icon">%s</span>
+			<span class="log-status">%s</span>
+			<span class="log-details">%s</span>
+		</div>`, statusClass,
+			entry.Timestamp.Format("15:04:05"),
+			statusIcon,
+			statusText,
+			details)
+	}
+
+	// Convert chart data to JSON
+	chartDataJSON, _ := json.Marshal(chartData)
+
+	// Current status
+	statusBadge := ""
+	if state.IsDown {
+		statusBadge = `<span class="status-badge down">❌ Down</span>`
+		if state.AcknowledgedAt != nil {
+			statusBadge = `<span class="status-badge acked">🔔 Acknowledged</span>`
+		}
+	} else {
+		statusBadge = `<span class="status-badge healthy">✅ Healthy</span>`
+	}
+
+	noDataMsg := ""
+	if len(logEntries) == 0 {
+		noDataMsg = `<div class="no-data">No check history available yet. Checks run every 5 seconds.</div>`
+	}
+
+	html := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s - Quick Watch</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            margin-bottom: 30px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .back-button {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 24px;
+        }
+        .back-button:hover {
+            color: #79c0ff;
+        }
+        h1 {
+            font-size: 28px;
+            color: #f0f6fc;
+            flex: 1;
+        }
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .status-badge.healthy {
+            background: rgba(63, 185, 80, 0.15);
+            color: #3fb950;
+        }
+        .status-badge.down {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+        }
+        .status-badge.acked {
+            background: rgba(187, 128, 9, 0.15);
+            color: #d29922;
+        }
+        .target-info {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .target-url {
+            color: #8b949e;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        .chart-container {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+            height: 400px;
+        }
+        .terminal-container {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .terminal-header {
+            background: #161b22;
+            padding: 12px 20px;
+            border-bottom: 1px solid #30363d;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .terminal-body {
+            padding: 16px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+            font-size: 13px;
+            max-height: 600px;
+            overflow-y: auto;
+            background: #0d1117;
+        }
+        .log-entry {
+            padding: 6px 0;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .log-entry.success {
+            color: #3fb950;
+        }
+        .log-entry.error {
+            color: #f85149;
+        }
+        .log-entry.recovered {
+            color: #79c0ff;
+        }
+        .log-timestamp {
+            color: #8b949e;
+            font-size: 12px;
+            min-width: 70px;
+        }
+        .log-icon {
+            font-size: 16px;
+        }
+        .log-status {
+            min-width: 100px;
+            font-weight: 600;
+        }
+        .log-details {
+            color: #8b949e;
+            flex: 1;
+        }
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+        canvas {
+            max-height: 360px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/targets" class="back-button">←</a>
+            <h1>%s</h1>
+            %s
+        </header>
+        
+        <div class="target-info">
+            <div class="target-url">%s</div>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="responseChart"></canvas>
+        </div>
+        
+        <div class="terminal-container">
+            <div class="terminal-header">
+                📋 Check History (showing last 100 checks)
+            </div>
+            <div class="terminal-body">
+                %s
+                %s
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const chartData = %s;
+        
+        const ctx = document.getElementById('responseChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: chartData.map(d => new Date(d.timestamp)),
+                datasets: [{
+                    label: 'Response Time (ms)',
+                    data: chartData.map(d => d.success ? d.responseTime : null),
+                    borderColor: '#3fb950',
+                    backgroundColor: 'rgba(63, 185, 80, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.4,
+                    pointRadius: 2,
+                    pointHoverRadius: 5,
+                    spanGaps: false
+                }, {
+                    label: 'Failed Checks',
+                    data: chartData.map(d => !d.success ? 0 : null),
+                    borderColor: '#f85149',
+                    backgroundColor: '#f85149',
+                    borderWidth: 0,
+                    pointRadius: 6,
+                    pointStyle: 'cross',
+                    pointHoverRadius: 8,
+                    showLine: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#c9d1d9'
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: '#161b22',
+                        borderColor: '#30363d',
+                        borderWidth: 1,
+                        titleColor: '#f0f6fc',
+                        bodyColor: '#c9d1d9',
+                        callbacks: {
+                            title: function(context) {
+                                return new Date(context[0].parsed.x).toLocaleString();
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            displayFormats: {
+                                minute: 'HH:mm',
+                                hour: 'HH:mm'
+                            }
+                        },
+                        grid: {
+                            color: '#30363d'
+                        },
+                        ticks: {
+                            color: '#8b949e'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: '#30363d'
+                        },
+                        ticks: {
+                            color: '#8b949e',
+                            callback: function(value) {
+                                return value + 'ms';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Auto-refresh every 5 seconds
+        setTimeout(() => window.location.reload(), 5000);
+        
+        // Scroll terminal to bottom
+        const terminal = document.querySelector('.terminal-body');
+        terminal.scrollTop = terminal.scrollHeight;
+    </script>
+</body>
+</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, logEntries, noDataMsg, string(chartDataJSON))
+
+	w.Write([]byte(html))
+}
+
+// handleTargetHistoryAPI handles the API endpoint for fetching target history as JSON
+func (s *Server) handleTargetHistoryAPI(w http.ResponseWriter, r *http.Request) {
+	// Extract target name from URL (format: /api/history/{name})
+	urlSafeName := strings.TrimPrefix(r.URL.Path, "/api/history/")
+	if urlSafeName == "" {
+		http.Error(w, "Target name required", http.StatusBadRequest)
+		return
+	}
+
+	// Find target by URL-safe name
+	state := s.engine.FindTargetByURLSafeName(urlSafeName)
+	if state == nil {
+		http.Error(w, "Target not found", http.StatusNotFound)
+		return
+	}
+
+	// Get check history
+	history := state.GetCheckHistory()
+
+	// Return as JSON
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	response := map[string]interface{}{
+		"target": map[string]interface{}{
+			"name":     state.Target.Name,
+			"url":      state.Target.URL,
+			"is_down":  state.IsDown,
+			"url_safe": state.GetURLSafeName(),
+		},
+		"history": history,
+		"count":   len(history),
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	return fmt.Sprintf("%dd %dh", days, hours)
 }

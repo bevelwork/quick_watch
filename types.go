@@ -110,6 +110,20 @@ type WebhookNotification struct {
 	Data      map[string]any `json:"data,omitempty"`
 }
 
+// CheckHistoryEntry represents a single check result in the history
+type CheckHistoryEntry struct {
+	Timestamp    time.Time
+	Success      bool
+	ResponseTime int64 // milliseconds
+	ResponseSize int64 // bytes
+	StatusCode   int
+	ErrorMessage string
+	AlertSent    bool
+	AlertCount   int // Number of alerts sent for this failure sequence
+	WasAcked     bool
+	WasRecovered bool
+}
+
 // TargetState represents the current state of a target
 type TargetState struct {
 	Target                 *Target
@@ -122,12 +136,14 @@ type TargetState struct {
 	CurrentAckToken        string  // Current acknowledgement token for active alert
 	AcknowledgedBy         string  // Who acknowledged (from request metadata)
 	AcknowledgedAt         *time.Time
-	AcknowledgementNote    string      // Optional note from acknowledger
-	AcknowledgementContact string      // Contact information (Slack, Zoom, phone, etc.)
-	RecoveryTimer          *time.Timer // Timer for auto-recovery (webhook targets with duration)
-	RecoveryTime           *time.Time  // When auto-recovery is scheduled
-	FailureCount           int         // Number of consecutive failures
-	LastAlertTime          *time.Time  // Time of the last alert sent
+	AcknowledgementNote    string              // Optional note from acknowledger
+	AcknowledgementContact string              // Contact information (Slack, Zoom, phone, etc.)
+	RecoveryTimer          *time.Timer         // Timer for auto-recovery (webhook targets with duration)
+	RecoveryTime           *time.Time          // When auto-recovery is scheduled
+	FailureCount           int                 // Number of consecutive failures
+	LastAlertTime          *time.Time          // Time of the last alert sent
+	CheckHistory           []CheckHistoryEntry // Running history of checks (max 1000 entries)
+	historyMutex           sync.RWMutex        // Protects CheckHistory
 }
 
 // TargetEngine represents the core targeting engine
@@ -381,6 +397,20 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 
 	state.LastCheck = result
 
+	// Create history entry (will be updated with alert info later)
+	historyEntry := CheckHistoryEntry{
+		Timestamp:    result.Timestamp,
+		Success:      result.Success,
+		ResponseTime: int64(result.ResponseTime),
+		ResponseSize: result.ResponseSize,
+		StatusCode:   result.StatusCode,
+		ErrorMessage: result.Error,
+		AlertSent:    false,
+		AlertCount:   state.FailureCount,
+		WasAcked:     state.AcknowledgedAt != nil,
+		WasRecovered: false,
+	}
+
 	// Check for size changes if enabled and we have a response size
 	if result.Success && result.ResponseSize > 0 {
 		if checkSizeChange(state, result.ResponseSize) {
@@ -431,6 +461,10 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 			}
 		}
 
+		// Update history entry
+		historyEntry.AlertSent = true
+		historyEntry.AlertCount = state.FailureCount
+
 		// Track metric: alert sent
 		e.metrics.mutex.Lock()
 		e.metrics.AlertsSent++
@@ -454,6 +488,10 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 		state.DownSince = nil
 		state.FailureCount = 0
 		state.LastAlertTime = nil
+
+		// Update history entry to mark recovery
+		historyEntry.WasRecovered = true
+
 		for _, strat := range state.AlertStrategies {
 			strat.SendAllClear(ctx, state.Target, result)
 		}
@@ -495,6 +533,10 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 					}
 				}
 
+				// Update history entry
+				historyEntry.AlertSent = true
+				historyEntry.AlertCount = state.FailureCount
+
 				// Track metric: alert sent
 				e.metrics.mutex.Lock()
 				e.metrics.AlertsSent++
@@ -503,6 +545,9 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 		}
 		// If acknowledged, don't send any more alerts until service recovers
 	}
+
+	// Save history entry
+	state.AddCheckHistory(historyEntry)
 }
 
 // HandleWebhookNotification handles incoming webhook notifications
@@ -789,4 +834,80 @@ func (e *TargetEngine) GenerateStatusReport() *StatusReportData {
 	e.metrics.LastReportTime = now
 
 	return report
+}
+
+// AddCheckHistory adds a check result to the target's history
+func (s *TargetState) AddCheckHistory(entry CheckHistoryEntry) {
+	s.historyMutex.Lock()
+	defer s.historyMutex.Unlock()
+
+	s.CheckHistory = append(s.CheckHistory, entry)
+
+	// Keep only the last 1000 entries
+	if len(s.CheckHistory) > 1000 {
+		s.CheckHistory = s.CheckHistory[len(s.CheckHistory)-1000:]
+	}
+}
+
+// GetCheckHistory safely retrieves the check history
+func (s *TargetState) GetCheckHistory() []CheckHistoryEntry {
+	s.historyMutex.RLock()
+	defer s.historyMutex.RUnlock()
+
+	// Return a copy to avoid race conditions
+	history := make([]CheckHistoryEntry, len(s.CheckHistory))
+	copy(history, s.CheckHistory)
+	return history
+}
+
+// GetURLSafeName returns a URL-safe version of the target name
+func (s *TargetState) GetURLSafeName() string {
+	return ToURLSafe(s.Target.Name)
+}
+
+// ToURLSafe converts a string to a URL-safe format
+func ToURLSafe(name string) string {
+	// Replace spaces and special characters with hyphens
+	safe := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		if r == ' ' || r == '_' || r == '.' || r == '/' {
+			return '-'
+		}
+		return -1 // Remove character
+	}, name)
+
+	// Convert to lowercase
+	safe = strings.ToLower(safe)
+
+	// Remove consecutive hyphens
+	for strings.Contains(safe, "--") {
+		safe = strings.ReplaceAll(safe, "--", "-")
+	}
+
+	// Trim hyphens from start and end
+	safe = strings.Trim(safe, "-")
+
+	return safe
+}
+
+// FindTargetByName finds a target by its name
+func (e *TargetEngine) FindTargetByName(name string) *TargetState {
+	for _, state := range e.targets {
+		if state.Target.Name == name {
+			return state
+		}
+	}
+	return nil
+}
+
+// FindTargetByURLSafeName finds a target by its URL-safe name
+func (e *TargetEngine) FindTargetByURLSafeName(urlSafeName string) *TargetState {
+	for _, state := range e.targets {
+		if state.GetURLSafeName() == urlSafeName {
+			return state
+		}
+	}
+	return nil
 }
