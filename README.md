@@ -7,6 +7,8 @@ Part of the `Quick Tools` family of tools from [Bevel Work](https://bevel.work/q
 ## ✨ Features
 
 - **Simple URL Monitoring**: Check URLs every 5 seconds for response time, status codes, and response size
+- **Visual Regression Testing**: Page-comparison strategy for detecting visual changes via screenshot comparison
+- **TCP Port Monitoring**: Check TCP port connectivity for databases, SSH, and custom services
 - **Threshold-Based Alerting**: Configure how long a service must be continuously down before firing alerts (prevents transient failures from triggering alerts)
 - **Exponential Backoff Alerts**: Intelligent alert throttling with exponential backoff (5s, 10s, 20s, 40s, etc.) to prevent alert fatigue
 - **Alert Acknowledgements**: Acknowledge alerts to stop repeated notifications while investigating issues
@@ -142,6 +144,82 @@ targets:
 - Firewall rule validation
 
 **Note**: For HTTP/HTTPS health checks, use `check_strategy: "http"` instead.
+
+### Page Comparison (Visual Regression Testing)
+
+Monitor web pages for visual changes by capturing and comparing screenshots. Perfect for detecting unexpected UI changes, error pages, defacement, or visual regressions.
+
+**Configuration:**
+```yaml
+targets:
+  - name: "Marketing Landing Page"
+    url: "https://example.com"
+    check_strategy: "page-comparison"
+    visual_threshold: 5.0  # Percentage (0-100, default: 5.0)
+    screenshot_path: "./screenshots"  # Optional, default: ./screenshots
+    threshold: 30
+    alerts: "console slack-alerts"
+
+  - name: "Login Page"
+    url: "https://app.example.com/login"
+    check_strategy: "page-comparison"
+    visual_threshold: 2.0  # More sensitive - 2% difference triggers alert
+    alerts: "console email"
+```
+
+**Features:**
+- ✅ Full-page screenshot capture using headless Chrome
+- ✅ Pixel-by-pixel comparison with configurable tolerance
+- ✅ Automatic baseline establishment on first run
+- ✅ Visual difference percentage calculation
+- ✅ Diff image generation highlighting changes in red
+- ✅ Screenshot and diff image storage
+- ✅ View screenshots via `/api/screenshots/{filename}`
+- ✅ All standard alerting features (threshold, backoff, acknowledgements)
+
+**How it works:**
+1. **First check**: Captures page screenshot and saves as **baseline**
+2. **Subsequent checks**: Captures new screenshot and compares to baseline
+3. **Difference calculation**: Pixel-by-pixel comparison with 1% color tolerance
+4. **Alert trigger**: If difference exceeds `visual_threshold`, alert is sent
+5. **Diff image**: Red highlights show exactly what changed
+
+**Screenshot Storage:**
+```
+./screenshots/
+  ├── marketing_landing_page_baseline.png  # Reference image
+  ├── marketing_landing_page_current.png   # Latest screenshot
+  └── marketing_landing_page_diff.png      # Visual diff (changes in red)
+```
+
+**Example Alerts:**
+```
+🚨 ALERT: Marketing Landing Page is DOWN
+   Visual difference 12.45% exceeds threshold 5.00%
+   Screenshot: /api/screenshots/marketing_landing_page_current.png
+   Diff Image: /api/screenshots/marketing_landing_page_diff.png
+```
+
+**When to Use:**
+- Detecting 500/404 error pages that replace your site
+- Monitoring for defacement or unauthorized changes
+- Visual regression testing for deployments
+- Detecting unexpected UI changes
+- Monitoring landing pages for critical content changes
+- Ensuring marketing campaigns display correctly
+
+**Visual Threshold Guidelines:**
+- `1-2%`: Very sensitive - catches minor changes (buttons, text edits)
+- `5%` (default): Balanced - catches significant changes, ignores minor variations
+- `10%+`: Less sensitive - only major page changes (useful for dynamic content)
+
+**Important Notes:**
+- Requires headless Chrome (chromedp)
+- Screenshots stored locally (ensure adequate disk space)
+- First run establishes baseline (always succeeds)
+- To reset baseline, delete the `*_baseline.png` file
+- Color tolerance of 1% built-in to handle anti-aliasing differences
+- Works best with static pages (dynamic timestamps/content may cause false positives)
 
 ### Threshold-Based Alerting
 
@@ -322,9 +400,9 @@ Quick Watch provides a beautiful web interface for monitoring individual targets
 
 When running in server mode, Quick Watch automatically creates web pages for each target:
 
-**Target List Page:**
+**Main Dashboard (Root Page):**
 ```
-http://localhost:8080/targets
+http://localhost:8080/
 ```
 - Shows all configured targets at a glance
 - **Unhealthy targets automatically sorted to the top**
@@ -332,6 +410,7 @@ http://localhost:8080/targets
 - **Live filter** to search targets by name or URL (no page refresh needed)
 - **Clear filter button** to reset search
 - Filter count shows "X of Y targets" when filtering
+- Displays check strategy badge for each target (http, tcp, webhook)
 - Quick navigation to individual target details
 - Auto-refreshes every 5 seconds (pauses when actively filtering)
 
@@ -386,7 +465,14 @@ http://localhost:8080/targets/{target-name}
 **🎯 Target Information:**
 - Current status badge (Healthy/Down/Acknowledged)
 - Target URL
-- Back button to navigate to target list
+- **"Show Details" expandable section** with complete target configuration:
+  - Check strategy (http, tcp, webhook)
+  - HTTP method and expected status codes (for http targets)
+  - Custom headers (for http targets)
+  - TCP ports being monitored (for tcp targets)
+  - Threshold settings
+  - Configured alert strategies
+- Back button to navigate to main dashboard
 
 **📊 Performance Statistics:**
 - **Average Page Size**: Mean response size across all successful checks
@@ -466,7 +552,7 @@ All target pages feature a modern, dark-themed interface inspired by GitHub's de
 
 #### Use Cases
 
-- **Operations Dashboard**: Bookmark `/targets` for quick access to all service status
+- **Operations Dashboard**: The root page (`/`) provides quick access to all service status
 - **Incident Investigation**: View detailed check history and pinpoint when issues started
 - **Performance Analysis**: Analyze response time trends over time
 - **Team Collaboration**: Share target URLs with team members during incidents
@@ -477,6 +563,7 @@ All target pages feature a modern, dark-themed interface inspired by GitHub's de
 ### Check Strategies
 - `http` - Standard HTTP health checks
 - `tcp` - TCP connection checks
+- `page-comparison` - Visual regression testing with screenshot comparison
 - `custom` - Custom check implementations
 
 ### Alert Strategies  
@@ -505,24 +592,64 @@ curl -X POST http://localhost:8080/webhook \
   -d '{"type": "alert", "message": "Service down", "target": "API Health"}'
 ```
 
-## Install
+## Quick Start
 
-### Required Software
-- Go 1.24.4 or later
+### Installation
 
-### Install with Go
+**Using Homebrew (Recommended):**
+
 ```bash
-go install github.com/bevelwork/quick_watch@latest
-quick_watch --version
+# Add the Bevel tap
+brew tap bevelwork/tap
+
+# Install Quick Watch
+brew install quick-watch
+
+# Verify installation
+quick-watch --version
 ```
 
-### Or Build from Source
+**Using Go:**
+
+```bash
+go install github.com/bevelwork/quick_watch@latest
+```
+
+**Build from Source:**
+
 ```bash
 git clone https://github.com/bevelwork/quick_watch.git
 cd quick_watch
-go build -o quick_watch .
-./quick_watch --version
+go build -o quick-watch .
+./quick-watch --version
 ```
+
+### First Steps
+
+1. **Start the server**:
+   ```bash
+   quick-watch server
+   ```
+
+2. **Open your browser**:
+   ```
+   http://localhost:8090/
+   ```
+
+3. **Add your first target**:
+   ```bash
+   quick-watch targets
+   ```
+
+## Documentation
+
+📚 **[Complete Documentation](./docs/README.md)** - Installation, quick start, and getting started guide
+
+**Detailed Guides:**
+- **[Targets Guide](./docs/targets.md)** - HTTP checks, TCP port monitoring, webhook targets
+- **[Alerts Guide](./docs/alerts.md)** - Slack, email, console, and file alerts
+- **[Settings Guide](./docs/settings.md)** - Server configuration and global settings
+- **[Hooks Guide](./docs/hooks.md)** - Webhook integration and CI/CD pipelines
 
 ## Usage Examples
 

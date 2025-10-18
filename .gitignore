@@ -1,4 +1,4 @@
-# Quick Watch - Git Ignore File
+screenshots/*
 # Excludes files that may contain private information
 
 # State files (contain monitor configurations and sensitive data)

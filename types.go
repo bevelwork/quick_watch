@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"strings"
@@ -15,16 +16,18 @@ import (
 
 // Target represents a targeting target
 type Target struct {
-	Name          string            `json:"name" yaml:"name"`
-	URL           string            `json:"url" yaml:"url"`
-	Method        string            `json:"method" yaml:"method,omitempty"`
-	Headers       map[string]string `json:"headers" yaml:"headers,omitempty"`
-	Threshold     int               `json:"threshold" yaml:"threshold,omitempty"`       // seconds (default: 30s)
-	StatusCodes   []string          `json:"status_codes" yaml:"status_codes,omitempty"` // List of acceptable status codes (e.g., ["2**", "302"])
-	SizeAlerts    SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
-	CheckStrategy string            `json:"check_strategy" yaml:"check_strategy,omitempty"`
-	Duration      int               `json:"duration" yaml:"duration,omitempty"` // For webhook targets: how long to stay "down" in seconds
-	Ports         []int             `json:"ports" yaml:"ports,omitempty"`       // For TCP check strategy: list of ports to check
+	Name            string            `json:"name" yaml:"name"`
+	URL             string            `json:"url" yaml:"url"`
+	Method          string            `json:"method" yaml:"method,omitempty"`
+	Headers         map[string]string `json:"headers" yaml:"headers,omitempty"`
+	Threshold       int               `json:"threshold" yaml:"threshold,omitempty"`       // seconds (default: 30s)
+	StatusCodes     []string          `json:"status_codes" yaml:"status_codes,omitempty"` // List of acceptable status codes (e.g., ["2**", "302"])
+	SizeAlerts      SizeAlertConfig   `json:"size_alerts" yaml:"size_alerts,omitempty"`   // Page size change detection
+	CheckStrategy   string            `json:"check_strategy" yaml:"check_strategy,omitempty"`
+	Duration        int               `json:"duration" yaml:"duration,omitempty"`                 // For webhook targets: how long to stay "down" in seconds
+	Ports           []int             `json:"ports" yaml:"ports,omitempty"`                       // For TCP check strategy: list of ports to check
+	VisualThreshold float64           `json:"visual_threshold" yaml:"visual_threshold,omitempty"` // For page-comparison: percentage difference threshold (0.0-100.0, default: 5.0)
+	ScreenshotPath  string            `json:"screenshot_path" yaml:"screenshot_path,omitempty"`   // For page-comparison: custom screenshot storage path
 	// Preferred field supporting multiple alert strategies
 	Alerts []string `json:"alerts" yaml:"alerts,omitempty"`
 	// Legacy single alert strategy name (kept for backward compatibility)
@@ -113,18 +116,21 @@ type WebhookNotification struct {
 
 // CheckHistoryEntry represents a single check result in the history
 type CheckHistoryEntry struct {
-	Timestamp    time.Time
-	Success      bool
-	ResponseTime int64 // milliseconds
-	ResponseSize int64 // bytes
-	StatusCode   int
-	ErrorMessage string
-	AlertSent    bool
-	AlertCount   int // Number of alerts sent for this failure sequence
-	WasAcked     bool
-	WasRecovered bool
-	ContentType  string // Content-Type header value
-	ResponseBody string // Response body (limited to first 10KB for JSON responses)
+	Timestamp        time.Time
+	Success          bool
+	ResponseTime     int64 // milliseconds
+	ResponseSize     int64 // bytes
+	StatusCode       int
+	ErrorMessage     string
+	AlertSent        bool
+	AlertCount       int // Number of alerts sent for this failure sequence
+	WasAcked         bool
+	WasRecovered     bool
+	ContentType      string  // Content-Type header value
+	ResponseBody     string  // Response body (limited to first 10KB for JSON responses)
+	VisualDifference float64 // For page-comparison: percentage difference (0.0-100.0)
+	ScreenshotPath   string  // For page-comparison: path to current screenshot
+	DiffImagePath    string  // For page-comparison: path to diff image
 }
 
 // TargetState represents the current state of a target
@@ -222,6 +228,7 @@ func (e *TargetEngine) registerDefaultStrategies(stateManager *StateManager) {
 	e.checkStrategies["http"] = NewHTTPCheckStrategy()
 	e.checkStrategies["webhook"] = NewWebhookCheckStrategy()
 	e.checkStrategies["tcp"] = NewTCPCheckStrategy()
+	e.checkStrategies["page-comparison"] = NewPageComparisonCheckStrategy()
 
 	// Alert strategies - register default console (stylized + color)
 	e.alertStrategies["console"] = NewConsoleAlertStrategy()
@@ -403,18 +410,21 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 
 	// Create history entry (will be updated with alert info later)
 	historyEntry := CheckHistoryEntry{
-		Timestamp:    result.Timestamp,
-		Success:      result.Success,
-		ResponseTime: int64(result.ResponseTime.Milliseconds()), // Convert nanoseconds to milliseconds
-		ResponseSize: result.ResponseSize,
-		StatusCode:   result.StatusCode,
-		ErrorMessage: result.Error,
-		AlertSent:    false,
-		AlertCount:   state.FailureCount,
-		WasAcked:     state.AcknowledgedAt != nil,
-		WasRecovered: false,
-		ContentType:  result.ContentType,
-		ResponseBody: result.ResponseBody,
+		Timestamp:        result.Timestamp,
+		Success:          result.Success,
+		ResponseTime:     int64(result.ResponseTime.Milliseconds()), // Convert nanoseconds to milliseconds
+		ResponseSize:     result.ResponseSize,
+		StatusCode:       result.StatusCode,
+		ErrorMessage:     result.Error,
+		AlertSent:        false,
+		AlertCount:       state.FailureCount,
+		WasAcked:         state.AcknowledgedAt != nil,
+		WasRecovered:     false,
+		ContentType:      result.ContentType,
+		ResponseBody:     result.ResponseBody,
+		VisualDifference: result.VisualDifference,
+		ScreenshotPath:   result.ScreenshotPath,
+		DiffImagePath:    result.DiffImagePath,
 	}
 
 	// Check for size changes if enabled and we have a response size
@@ -549,11 +559,15 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 			// Else: haven't been down long enough yet, don't alert
 		}
 	} else if result.Success && wasDown {
-		// Just came back up - clear acknowledgement and reset counters
+		// Just came back up - but only send ALL CLEAR if we actually sent an alert
+		// (i.e., the target was down long enough to exceed the threshold)
+		shouldSendAllClear := state.FailureCount > 0
+
+		// Clear acknowledgement and reset counters
 		e.ClearAcknowledgement(state)
 
-		// Track resolved outage
-		if state.DownSince != nil {
+		// Track resolved outage only if we sent an alert
+		if shouldSendAllClear && state.DownSince != nil {
 			downDuration := time.Since(*state.DownSince)
 			e.metrics.mutex.Lock()
 			e.metrics.ResolvedOutages = append(e.metrics.ResolvedOutages, ResolvedOutage{
@@ -571,8 +585,11 @@ func (e *TargetEngine) checkTarget(ctx context.Context, state *TargetState) {
 		// Update history entry to mark recovery
 		historyEntry.WasRecovered = true
 
-		for _, strat := range state.AlertStrategies {
-			strat.SendAllClear(ctx, state.Target, result)
+		// Only send ALL CLEAR if we actually sent an alert before
+		if shouldSendAllClear {
+			for _, strat := range state.AlertStrategies {
+				strat.SendAllClear(ctx, state.Target, result)
+			}
 		}
 	}
 
@@ -637,7 +654,8 @@ func (e *TargetEngine) AcknowledgeAlert(token, acknowledgedBy, note, contact str
 
 	// Mark as acknowledged (or update existing acknowledgement)
 	now := time.Now()
-	if state.AcknowledgedAt == nil {
+	isFirstAcknowledgement := state.AcknowledgedAt == nil
+	if isFirstAcknowledgement {
 		state.AcknowledgedAt = &now
 	}
 
@@ -650,6 +668,12 @@ func (e *TargetEngine) AcknowledgeAlert(token, acknowledgedBy, note, contact str
 	}
 	if contact != "" {
 		state.AcknowledgementContact = contact
+	}
+
+	// For page-comparison targets: Delete baseline images on first acknowledgement
+	// This resets the target and forces new baselines to be created
+	if isFirstAcknowledgement && state.Target.CheckStrategy == "page-comparison" {
+		e.deleteBaselineImages(state.Target.Name)
 	}
 
 	// Keep token in map so we can detect duplicate acknowledgements
@@ -674,6 +698,30 @@ func (e *TargetEngine) ClearAcknowledgement(state *TargetState) {
 	state.AcknowledgedBy = ""
 	state.AcknowledgementNote = ""
 	state.AcknowledgementContact = ""
+}
+
+// deleteBaselineImages removes all baseline screenshots for a target
+// This forces the target to re-initialize with new baseline images
+func (e *TargetEngine) deleteBaselineImages(targetName string) {
+	screenshotPath := "screenshots"
+	
+	// Sanitize target name for file path (same logic as in strategies.go)
+	safeName := strings.ReplaceAll(targetName, " ", "_")
+	safeName = strings.ReplaceAll(safeName, "/", "-")
+	safeName = strings.ToLower(safeName)
+	
+	// Delete all 5 baseline images
+	deletedCount := 0
+	for i := 1; i <= 5; i++ {
+		baselinePath := fmt.Sprintf("%s/%s_baseline_%d.png", screenshotPath, safeName, i)
+		if err := os.Remove(baselinePath); err == nil {
+			deletedCount++
+		}
+	}
+	
+	if deletedCount > 0 {
+		log.Printf("Acknowledged alert for %s: Deleted %d baseline image(s), will re-initialize", targetName, deletedCount)
+	}
 }
 
 // TriggerWebhookTarget triggers a webhook target to go "down" and optionally auto-recover

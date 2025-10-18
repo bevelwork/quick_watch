@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// Load state
 	if err := s.stateManager.Load(); err != nil {
 		return fmt.Errorf("failed to load state: %v", err)
+	}
+
+	// Clean up old diff images on startup
+	if err := s.cleanupDiffImages(); err != nil {
+		log.Printf("Warning: Failed to clean up diff images: %v", err)
 	}
 
 	// Create targeting engine
@@ -96,18 +103,16 @@ func (s *Server) Start(ctx context.Context) error {
 	// Trigger endpoints
 	mux.HandleFunc("/trigger/status_report", s.handleTriggerStatusReport)
 
-	// Target detail pages
+	// Target pages - root is the main target list view
 	mux.HandleFunc("/targets/", s.handleTargetDetail)
-	mux.HandleFunc("/targets", s.handleTargetList)
 	mux.HandleFunc("/api/history/", s.handleTargetHistoryAPI)
+	mux.HandleFunc("/api/screenshots/", s.handleScreenshots)
+	mux.HandleFunc("/", s.handleTargetList) // Root endpoint - main dashboard
 
 	// Health and info endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/info", s.handleInfo)
 	mux.HandleFunc("/status", s.handleWebhookStatus)
-
-	// Root endpoint
-	mux.HandleFunc("/", s.handleRoot)
 
 	// Server is configured with port from settings (already set above)
 
@@ -128,9 +133,9 @@ func (s *Server) Start(ctx context.Context) error {
 		log.Printf("⚠️  Server address not configured - using localhost")
 	}
 
+	log.Printf("Main dashboard: %s/", displayAddr)
 	log.Printf("Webhook endpoint: %s%s", displayAddr, webhookPath)
 	log.Printf("API endpoints: %s/api/*", displayAddr)
-	log.Printf("Target pages: %s/targets", displayAddr)
 	log.Printf("Health check: %s/health", displayAddr)
 	log.Printf("Status: %s/status", displayAddr)
 
@@ -155,6 +160,63 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	s.state = "stopped"
+	return nil
+}
+
+// cleanupDiffImages removes all diff images, baselines, and old current screenshots on startup
+func (s *Server) cleanupDiffImages() error {
+	screenshotPath := "screenshots"
+	
+	// Check if directory exists
+	if _, err := os.Stat(screenshotPath); os.IsNotExist(err) {
+		return nil // Directory doesn't exist yet, nothing to clean
+	}
+	
+	// Read directory contents
+	files, err := os.ReadDir(screenshotPath)
+	if err != nil {
+		return fmt.Errorf("failed to read screenshots directory: %v", err)
+	}
+	
+	// Remove diff images, baselines, and old current screenshots
+	diffCount := 0
+	baselineCount := 0
+	currentCount := 0
+	
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		
+		fileName := file.Name()
+		filePath := filepath.Join(screenshotPath, fileName)
+		
+		// Remove diff images
+		if strings.HasSuffix(fileName, "_diff.png") {
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to remove diff image %s: %v", fileName, err)
+			} else {
+				diffCount++
+			}
+		} else if strings.Contains(fileName, "_baseline_") && strings.HasSuffix(fileName, ".png") {
+			// Remove baseline images
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to remove baseline image %s: %v", fileName, err)
+			} else {
+				baselineCount++
+			}
+		} else if strings.Contains(fileName, "_current_") && strings.HasSuffix(fileName, ".png") {
+			// Remove old current screenshots
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to remove current screenshot %s: %v", fileName, err)
+			} else {
+				currentCount++
+			}
+		}
+	}
+	
+	log.Printf("Startup cleanup: Removed %d diff image(s), %d baseline(s), %d old screenshot(s)", diffCount, baselineCount, currentCount)
+	
 	return nil
 }
 
@@ -337,51 +399,6 @@ func (s *Server) handleWebhookStatus(wr http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(wr).Encode(status)
-}
-
-// handleRoot handles the root endpoint
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(http.StatusOK)
-
-	html := `
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Quick Watch Server</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        .endpoint { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .method { font-weight: bold; color: #0066cc; }
-    </style>
-</head>
-<body>
-    <h1>Quick Watch Server</h1>
-    <p>Quick Watch targeting server is running.</p>
-    
-    <h2>API Endpoints</h2>
-    <div class="endpoint">
-        <span class="method">GET</span> /api/status - Get targeting status
-    </div>
-    <div class="endpoint">
-        <span class="method">GET</span> /api/targets - List all targets
-    </div>
-    <div class="endpoint">
-        <span class="method">POST</span> /api/targets - Add a target
-    </div>
-    <div class="endpoint">
-        <span class="method">DELETE</span> /api/targets/{url} - Remove a target
-    </div>
-    <div class="endpoint">
-        <span class="method">GET</span> /api/state - Get server state
-    </div>
-    <div class="endpoint">
-        <span class="method">GET</span> /health - Health check
-    </div>
-</body>
-</html>`
-
-	w.Write([]byte(html))
 }
 
 // handleHealth handles health check requests
@@ -873,7 +890,7 @@ func (s *Server) showAcknowledgementForm(w http.ResponseWriter, token, name, url
         }
         input[type="text"],
         textarea {
-            width: 100%%;
+            width: 100%% ;
             padding: 12px;
             border: 2px solid #ddd;
             border-radius: 6px;
@@ -905,7 +922,7 @@ func (s *Server) showAcknowledgementForm(w http.ResponseWriter, token, name, url
             font-weight: 600;
             border-radius: 6px;
             cursor: pointer;
-            width: 100%%;
+            width: 100%% ;
             transition: transform 0.2s, box-shadow 0.2s;
         }
         .submit-btn:hover {
@@ -1675,6 +1692,11 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		checkStrategy := state.Target.CheckStrategy
+		if checkStrategy == "" {
+			checkStrategy = "http"
+		}
+
 		targetCards += fmt.Sprintf(`
 			<a href="/targets/%s" class="target-card %s" data-target-name="%s" data-target-url="%s">
 				<div class="target-header">
@@ -1688,8 +1710,11 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
 					<div><strong>Last Check:</strong> %s</div>
 					<div><strong>Response Time:</strong> %s</div>
 				</div>
+				<div class="target-strategy">
+					<span class="strategy-badge">%s</span>
+				</div>
 			</a>
-		`, urlSafeName, statusClass, strings.ToLower(state.Target.Name), strings.ToLower(state.Target.URL), statusIcon, state.Target.Name, statusClass, statusText, state.Target.URL, downtime, lastCheck, responseTime)
+		`, urlSafeName, statusClass, strings.ToLower(state.Target.Name), strings.ToLower(state.Target.URL), statusIcon, state.Target.Name, statusClass, statusText, state.Target.URL, downtime, lastCheck, responseTime, checkStrategy)
 	}
 
 	emptyState := ""
@@ -1854,6 +1879,22 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
         .target-meta strong {
             color: #c9d1d9;
         }
+        .target-strategy {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #30363d;
+        }
+        .strategy-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            background: rgba(88, 166, 255, 0.15);
+            color: #58a6ff;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
         .empty-state {
             text-align: center;
             padding: 60px 20px;
@@ -1863,9 +1904,35 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
             font-size: 24px;
             margin-bottom: 10px;
         }
+        .footer {
+            margin-top: 60px;
+            padding-top: 30px;
+            border-top: 1px solid #30363d;
+            text-align: center;
+            color: #8b949e;
+            font-size: 14px;
+        }
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+        .footer-links a {
+            color: #58a6ff;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .footer-links a:hover {
+            color: #79c0ff;
+        }
         @media (max-width: 768px) {
             .target-grid {
                 grid-template-columns: 1fr;
+            }
+            .footer-links {
+                flex-direction: column;
+                gap: 15px;
             }
         }
     </style>
@@ -1943,6 +2010,14 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
         </div>
         
         %s
+        
+        <div class="footer">
+            <div class="footer-links">
+                <a href="https://bevel.work" target="_blank" rel="noopener noreferrer">Created by Bevel.work</a>
+                <a href="https://bevel.work/quick-tools" target="_blank" rel="noopener noreferrer">More Quick-Tools</a>
+                <a href="https://github.com/bevelwork/quick_watch/tree/main/docs" target="_blank" rel="noopener noreferrer">Docs</a>
+            </div>
+        </div>
     </div>
 </body>
 </html>`, len(targets), targetCards, emptyState)
@@ -1955,7 +2030,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	// Extract target name from URL
 	urlSafeName := strings.TrimPrefix(r.URL.Path, "/targets/")
 	if urlSafeName == "" {
-		http.Redirect(w, r, "/targets", http.StatusSeeOther)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 
@@ -2065,9 +2140,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 	for i := startIdx; i < historyLen; i++ {
 		entry := history[i]
 		chartData = append(chartData, map[string]any{
-			"timestamp":    entry.Timestamp.Unix() * 1000, // milliseconds for Chart.js
-			"success":      entry.Success,
-			"responseTime": entry.ResponseTime,
+			"timestamp":        entry.Timestamp.Unix() * 1000, // milliseconds for Chart.js
+			"success":          entry.Success,
+			"responseTime":     entry.ResponseTime,
+			"visualDifference": entry.VisualDifference, // For page-comparison charts
 		})
 	}
 
@@ -2150,6 +2226,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		if entry.ContentType != "" {
 			expandedLines = append(expandedLines, fmt.Sprintf("Content-Type: %s", entry.ContentType))
 		}
+		if entry.VisualDifference > 0 {
+			expandedLines = append(expandedLines, fmt.Sprintf("Visual Difference: %.2f%%", entry.VisualDifference))
+		}
 		if entry.ErrorMessage != "" {
 			expandedLines = append(expandedLines, fmt.Sprintf("Error: %s", entry.ErrorMessage))
 		}
@@ -2163,23 +2242,53 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			expandedLines = append(expandedLines, "Status: Recovered")
 		}
 
+		// Build expanded content with images for page-comparison
+		expandedContent = ""
+		for _, line := range expandedLines {
+			expandedContent += fmt.Sprintf("<div>%s</div>", line)
+		}
+
 		// Add response body if present
 		if entry.ResponseBody != "" {
-			expandedLines = append(expandedLines, "")
-			expandedLines = append(expandedLines, "Response Body:")
+			expandedContent += "<div></div>"
+			expandedContent += "<div>Response Body:</div>"
 			// Escape response body for HTML display
 			escapedBody := strings.ReplaceAll(entry.ResponseBody, "&", "&amp;")
 			escapedBody = strings.ReplaceAll(escapedBody, "<", "&lt;")
 			escapedBody = strings.ReplaceAll(escapedBody, ">", "&gt;")
-			expandedContent = ""
-			for _, line := range expandedLines {
-				expandedContent += fmt.Sprintf("<div>%s</div>", line)
-			}
 			expandedContent += fmt.Sprintf("<pre>%s</pre>", escapedBody)
-		} else {
-			for _, line := range expandedLines {
-				expandedContent += fmt.Sprintf("<div>%s</div>", line)
+		}
+
+		// Add screenshot images for page-comparison
+		if entry.ScreenshotPath != "" || entry.DiffImagePath != "" {
+			expandedContent += `<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #30363d;"></div>`
+			expandedContent += `<div style="font-weight: 600; margin-bottom: 8px;">📸 Visual Comparison:</div>`
+			expandedContent += `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px;">`
+			
+			if entry.ScreenshotPath != "" {
+				filename := filepath.Base(entry.ScreenshotPath)
+				expandedContent += fmt.Sprintf(`
+					<div>
+						<div style="font-size: 11px; color: #8b949e; margin-bottom: 4px;">Current Screenshot:</div>
+						<a href="/api/screenshots/%s" target="_blank">
+							<img src="/api/screenshots/%s" style="width: 100%% ; border: 1px solid #30363d; border-radius: 4px; cursor: pointer;" alt="Current screenshot" />
+						</a>
+					</div>`, filename, filename)
 			}
+			
+			if entry.DiffImagePath != "" {
+				filename := filepath.Base(entry.DiffImagePath)
+				expandedContent += fmt.Sprintf(`
+					<div>
+						<div style="font-size: 11px; color: #8b949e; margin-bottom: 4px;">Difference Overlay:</div>
+						<a href="/api/screenshots/%s" target="_blank">
+							<img src="/api/screenshots/%s" style="width: 100%% ; border: 1px solid #30363d; border-radius: 4px; cursor: pointer;" alt="Diff image" />
+						</a>
+					</div>`, filename, filename)
+			}
+			
+			expandedContent += `</div>`
+			expandedContent += `<div style="font-size: 11px; color: #8b949e; margin-top: 8px; font-style: italic;">Click images to view full size</div>`
 		}
 
 		// Create clickable log entry with expandable details
@@ -2217,10 +2326,114 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		statusBadge = `<span class="status-badge healthy">✅ Healthy</span>`
 	}
 
+	// Create acknowledge button section
+	ackButtonHTML := ""
+	if state.IsDown && state.CurrentAckToken != "" && state.AcknowledgedAt == nil {
+		// Target is down and not yet acknowledged - show active button
+		ackURL := fmt.Sprintf("/api/acknowledge/%s", state.CurrentAckToken)
+		ackButtonHTML = fmt.Sprintf(`
+		<div class="ack-button-container">
+			<a href="%s" class="ack-button ack-button-active">
+				🔔 Acknowledge
+			</a>
+			<span class="ack-button-hint">Click to acknowledge that you are investigating this target</span>
+		</div>`, ackURL)
+	} else {
+		// Target is healthy or already acknowledged - show disabled button
+		disabledReason := "Target is healthy"
+		if state.AcknowledgedAt != nil {
+			disabledReason = "Already acknowledged"
+		}
+		ackButtonHTML = fmt.Sprintf(`
+		<div class="ack-button-container">
+			<button class="ack-button ack-button-disabled" disabled>
+				🔔 Acknowledge
+			</button>
+			<span class="ack-button-hint">%s</span>
+		</div>`, disabledReason)
+	}
+
 	noDataMsg := ""
 	if len(logEntries) == 0 {
 		noDataMsg = `<div class="no-data">No check history available yet. Checks run every 5 seconds.</div>`
 	}
+
+	// Build target details section
+	checkStrategy := state.Target.CheckStrategy
+	if checkStrategy == "" {
+		checkStrategy = "http"
+	}
+
+	detailsHTML := fmt.Sprintf(`<div class="detail-row"><strong>Check Strategy:</strong> <span class="strategy-badge-detail">%s</span></div>`, checkStrategy)
+
+	// Add strategy-specific details
+	if checkStrategy == "http" || checkStrategy == "" {
+		method := state.Target.Method
+		if method == "" {
+			method = "GET"
+		}
+		detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>HTTP Method:</strong> %s</div>`, method)
+
+		if len(state.Target.StatusCodes) > 0 {
+			statusCodesStr := strings.Join(state.Target.StatusCodes, ", ")
+			detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Expected Status Codes:</strong> %s</div>`, statusCodesStr)
+		}
+
+		if len(state.Target.Headers) > 0 {
+			headersStr := ""
+			for k, v := range state.Target.Headers {
+				headersStr += fmt.Sprintf("%s: %s<br>", k, v)
+			}
+			detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Custom Headers:</strong><br>%s</div>`, headersStr)
+		}
+	} else if checkStrategy == "tcp" {
+		if len(state.Target.Ports) > 0 {
+			portsStr := ""
+			for i, port := range state.Target.Ports {
+				if i > 0 {
+					portsStr += ", "
+				}
+				portsStr += fmt.Sprintf("%d", port)
+			}
+			detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>TCP Ports:</strong> %s</div>`, portsStr)
+		}
+	} else if checkStrategy == "page-comparison" {
+		visualThreshold := 5.0
+		if state.Target.VisualThreshold > 0 {
+			visualThreshold = state.Target.VisualThreshold
+		}
+		detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Visual Threshold:</strong> %.2f%%</div>`, visualThreshold)
+
+		if state.Target.ScreenshotPath != "" {
+			detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Screenshot Path:</strong> %s</div>`, state.Target.ScreenshotPath)
+		} else {
+			detailsHTML += `<div class="detail-row"><strong>Screenshot Path:</strong> ./screenshots</div>`
+		}
+	}
+
+	// Add threshold
+	threshold := state.Target.Threshold
+	if threshold == 0 {
+		threshold = 30
+	}
+	detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Threshold:</strong> %d seconds</div>`, threshold)
+
+	// Add alerts
+	if len(state.Target.Alerts) > 0 {
+		alertsStr := strings.Join(state.Target.Alerts, ", ")
+		detailsHTML += fmt.Sprintf(`<div class="detail-row"><strong>Alerts:</strong> %s</div>`, alertsStr)
+	}
+
+	targetDetailsHTML := fmt.Sprintf(`
+	<div class="target-details">
+		<button class="details-toggle" onclick="toggleDetails()">
+			<span class="toggle-icon">▶</span>
+			<span class="toggle-text">Show Details</span>
+		</button>
+		<div id="target-details-content" class="details-content" style="display: none;">
+			%s
+		</div>
+	</div>`, detailsHTML)
 
 	html := fmt.Sprintf(`
 <!DOCTYPE html>
@@ -2283,6 +2496,46 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         .status-badge.acked {
             background: rgba(187, 128, 9, 0.15);
             color: #d29922;
+        }
+        .ack-button-container {
+            margin: 20px 0;
+            text-align: center;
+        }
+        .ack-button {
+            display: inline-block;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            border: 1px solid;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+        .ack-button-active {
+            background: rgba(187, 128, 9, 0.15);
+            color: #d29922;
+            border-color: #d29922;
+        }
+        .ack-button-active:hover {
+            background: rgba(187, 128, 9, 0.25);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(187, 128, 9, 0.3);
+        }
+        .ack-button-disabled {
+            background: rgba(110, 118, 129, 0.1);
+            color: #6e7681;
+            border-color: #30363d;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        .ack-button-hint {
+            display: block;
+            margin-top: 8px;
+            font-size: 12px;
+            color: #8b949e;
+            font-style: italic;
         }
         .target-info {
             background: #161b22;
@@ -2431,12 +2684,69 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             font-weight: 600;
             color: #f0f6fc;
         }
+        .target-details {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        .details-toggle {
+            background: none;
+            border: none;
+            color: #58a6ff;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0;
+            transition: color 0.2s;
+            font-family: inherit;
+        }
+        .details-toggle:hover {
+            color: #79c0ff;
+        }
+        .toggle-icon {
+            font-size: 10px;
+            transition: transform 0.2s ease;
+        }
+        .toggle-icon.expanded {
+            transform: rotate(90deg);
+        }
+        .details-content {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #30363d;
+        }
+        .detail-row {
+            padding: 8px 0;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+        .detail-row strong {
+            color: #8b949e;
+            min-width: 180px;
+            display: inline-block;
+        }
+        .strategy-badge-detail {
+            display: inline-block;
+            padding: 4px 10px;
+            background: rgba(88, 166, 255, 0.15);
+            color: #58a6ff;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <a href="/targets" class="back-button">←</a>
+            <a href="/" class="back-button">←</a>
             <h1>%s</h1>
             %s
         </header>
@@ -2445,6 +2755,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             <div class="target-url">%s</div>
         </div>
         
+        %s
+        
+        %s
+
         %s
         
         <div class="chart-container">
@@ -2464,6 +2778,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
     
     <script>
         const chartData = %s;
+        const checkStrategy = '%s';
+        const isPageComparison = checkStrategy === 'page-comparison';
         
         // Format labels for display
         const labels = chartData.map(d => {
@@ -2501,8 +2817,11 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Response Time (s)',
-                    data: chartData.map(d => d.success ? d.responseTime / 1000 : 0),
+                    label: isPageComparison ? 'Visual Difference (%%)' : 'Response Time (s)',
+                    data: chartData.map(d => {
+                        if (!d.success) return 0;
+                        return isPageComparison ? d.visualDifference : d.responseTime / 1000;
+                    }),
                     borderColor: '#3fb950',
                     backgroundColor: 'rgba(63, 185, 80, 0.1)',
                     borderWidth: 2,
@@ -2580,9 +2899,13 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                                     label += ': ';
                                 }
                                 if (entry.success) {
-                                    label += formatSeconds(entry.responseTime) + 's';
+                                    if (isPageComparison) {
+                                        label += entry.visualDifference.toFixed(2) + '%%';
+                                    } else {
+                                        label += formatSeconds(entry.responseTime) + 's';
+                                    }
                                 } else {
-                                    label += 'Failed (0s)';
+                                    label += 'Failed';
                                 }
                                 return label;
                             }
@@ -2617,11 +2940,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                                 size: 11
                             },
                             callback: function(value) {
-                                // Format y-axis ticks with up to 4 significant digits
-                                if (value === 0) return '0s';
-                                const str = value.toPrecision(4);
-                                // Remove trailing zeros after decimal
-                                return parseFloat(str) + 's';
+                                if (isPageComparison) {
+                                    // Format as percentage for page-comparison
+                                    return value.toFixed(1) + '%%';
+                                } else {
+                                    // Format y-axis ticks with up to 4 significant digits for response time
+                                    if (value === 0) return '0s';
+                                    const str = value.toPrecision(4);
+                                    // Remove trailing zeros after decimal
+                                    return parseFloat(str) + 's';
+                                }
                             }
                         }
                     }
@@ -2631,6 +2959,25 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         
         // Track expanded entries
         const expandedEntries = new Set();
+        
+        // Toggle target details section
+        function toggleDetails() {
+            const content = document.getElementById('target-details-content');
+            const toggleIcon = document.querySelector('.toggle-icon');
+            const toggleText = document.querySelector('.toggle-text');
+            
+            if (content && toggleIcon && toggleText) {
+                if (content.style.display === 'none') {
+                    content.style.display = 'block';
+                    toggleIcon.classList.add('expanded');
+                    toggleText.textContent = 'Hide Details';
+                } else {
+                    content.style.display = 'none';
+                    toggleIcon.classList.remove('expanded');
+                    toggleText.textContent = 'Show Details';
+                }
+            }
+        }
         
         // Toggle entry expansion (like GitHub Actions)
         function toggleEntry(id) {
@@ -2663,11 +3010,35 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 const statusBadge = document.querySelector('.status-badge');
                 if (statusBadge && data.target) {
                     if (data.target.is_down) {
-                        statusBadge.className = 'status-badge down';
-                        statusBadge.textContent = '❌ Down';
+                        if (data.target.acknowledged_at) {
+                            statusBadge.className = 'status-badge acked';
+                            statusBadge.textContent = '🔔 Acknowledged';
+                        } else {
+                            statusBadge.className = 'status-badge down';
+                            statusBadge.textContent = '❌ Down';
+                        }
                     } else {
                         statusBadge.className = 'status-badge healthy';
                         statusBadge.textContent = '✅ Healthy';
+                    }
+                }
+                
+                // Update acknowledge button
+                const ackButtonContainer = document.querySelector('.ack-button-container');
+                if (ackButtonContainer && data.target) {
+                    if (data.target.is_down && data.target.current_ack_token && !data.target.acknowledged_at) {
+                        // Target is down and not acknowledged - show active button
+                        const ackURL = '/api/acknowledge/' + data.target.current_ack_token;
+                        ackButtonContainer.innerHTML = '<a href="' + ackURL + '" class="ack-button ack-button-active">🔔 Acknowledge</a>' +
+                            '<span class="ack-button-hint">Click to acknowledge that you are investigating this target</span>';
+                    } else {
+                        // Target is healthy or already acknowledged - show disabled button
+                        let disabledReason = 'Target is healthy';
+                        if (data.target.acknowledged_at) {
+                            disabledReason = 'Already acknowledged';
+                        }
+                        ackButtonContainer.innerHTML = '<button class="ack-button ack-button-disabled" disabled>🔔 Acknowledge</button>' +
+                            '<span class="ack-button-hint">' + disabledReason + '</span>';
                     }
                 }
                 
@@ -2735,7 +3106,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             const newData = last100.map(entry => ({
                 timestamp: new Date(entry.Timestamp).getTime(),
                 success: entry.Success,
-                responseTime: entry.ResponseTime
+                responseTime: entry.ResponseTime,
+                visualDifference: entry.VisualDifference || 0
             }));
             
             const newLabels = newData.map(d => {
@@ -2749,7 +3121,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             });
             
             chart.data.labels = newLabels;
-            chart.data.datasets[0].data = newData.map(d => d.success ? d.responseTime / 1000 : 0);
+            chart.data.datasets[0].data = newData.map(d => {
+                if (!d.success) return 0;
+                return isPageComparison ? d.visualDifference : d.responseTime / 1000;
+            });
             chart.data.datasets[0].pointBackgroundColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
             chart.data.datasets[0].pointBorderColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
             chart.data.datasets[0].pointHoverBackgroundColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
@@ -2837,23 +3212,53 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                     expandedLines.push('Response Size: ' + sizeStr);
                 }
                 if (entry.ContentType) expandedLines.push('Content-Type: ' + entry.ContentType);
+                if (entry.VisualDifference > 0) expandedLines.push('Visual Difference: ' + entry.VisualDifference.toFixed(2) + '%%');
                 if (entry.ErrorMessage) expandedLines.push('Error: ' + entry.ErrorMessage);
                 if (entry.AlertSent) expandedLines.push('Alert Sent: Yes (Alert #' + entry.AlertCount + ')');
                 if (entry.WasAcked) expandedLines.push('Acknowledged: Yes');
                 if (entry.WasRecovered) expandedLines.push('Status: Recovered');
                 
+                // Build expanded content
                 let expandedContent = '';
+                for (const line of expandedLines) {
+                    expandedContent += '<div>' + escapeHtml(line) + '</div>';
+                }
+                
+                // Add response body if present
                 if (entry.ResponseBody) {
-                    expandedLines.push('');
-                    expandedLines.push('Response Body:');
-                    for (const line of expandedLines) {
-                        expandedContent += '<div>' + escapeHtml(line) + '</div>';
-                    }
+                    expandedContent += '<div></div>';
+                    expandedContent += '<div>Response Body:</div>';
                     expandedContent += '<pre>' + escapeHtml(entry.ResponseBody) + '</pre>';
-                } else {
-                    for (const line of expandedLines) {
-                        expandedContent += '<div>' + escapeHtml(line) + '</div>';
+                }
+                
+                // Add screenshot images for page-comparison
+                if (entry.ScreenshotPath || entry.DiffImagePath) {
+                    expandedContent += '<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #30363d;"></div>';
+                    expandedContent += '<div style="font-weight: 600; margin-bottom: 8px;">📸 Visual Comparison:</div>';
+                    expandedContent += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px;">';
+                    
+                    if (entry.ScreenshotPath) {
+                        const filename = entry.ScreenshotPath.split('/').pop();
+                        expandedContent += '<div>';
+                        expandedContent += '<div style="font-size: 11px; color: #8b949e; margin-bottom: 4px;">Current Screenshot:</div>';
+                        expandedContent += '<a href="/api/screenshots/' + filename + '" target="_blank">';
+                        expandedContent += '<img src="/api/screenshots/' + filename + '" style="width: 100%% ; border: 1px solid #30363d; border-radius: 4px; cursor: pointer;" alt="Current screenshot" />';
+                        expandedContent += '</a>';
+                        expandedContent += '</div>';
                     }
+                    
+                    if (entry.DiffImagePath) {
+                        const filename = entry.DiffImagePath.split('/').pop();
+                        expandedContent += '<div>';
+                        expandedContent += '<div style="font-size: 11px; color: #8b949e; margin-bottom: 4px;">Difference Overlay:</div>';
+                        expandedContent += '<a href="/api/screenshots/' + filename + '" target="_blank">';
+                        expandedContent += '<img src="/api/screenshots/' + filename + '" style="width: 100%% ; border: 1px solid #30363d; border-radius: 4px; cursor: pointer;" alt="Diff image" />';
+                        expandedContent += '</a>';
+                        expandedContent += '</div>';
+                    }
+                    
+                    expandedContent += '</div>';
+                    expandedContent += '<div style="font-size: 11px; color: #8b949e; margin-top: 8px; font-style: italic;">Click images to view full size</div>';
                 }
                 
                 const isExpanded = expandedEntries.has(entryID);
@@ -2894,7 +3299,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         setInterval(updateData, 5000);
     </script>
 </body>
-</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, statsHTML, logEntries, noDataMsg, string(chartDataJSON))
+</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, ackButtonHTML, targetDetailsHTML, statsHTML, logEntries, noDataMsg, string(chartDataJSON), checkStrategy)
 
 	w.Write([]byte(html))
 }
@@ -2934,6 +3339,41 @@ func (s *Server) handleTargetHistoryAPI(w http.ResponseWriter, r *http.Request) 
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleScreenshots serves screenshot images for page-comparison targets
+func (s *Server) handleScreenshots(w http.ResponseWriter, r *http.Request) {
+	// Extract file path from URL (format: /api/screenshots/{filename})
+	filename := strings.TrimPrefix(r.URL.Path, "/api/screenshots/")
+	if filename == "" {
+		http.Error(w, "Filename required", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize filename to prevent directory traversal
+	filename = filepath.Base(filename)
+
+	// Build full path (check default location)
+	screenshotPath := filepath.Join("./screenshots", filename)
+
+	// Check if file exists
+	if _, err := os.Stat(screenshotPath); os.IsNotExist(err) {
+		http.Error(w, "Screenshot not found", http.StatusNotFound)
+		return
+	}
+
+	// Read file
+	data, err := os.ReadFile(screenshotPath)
+	if err != nil {
+		http.Error(w, "Failed to read screenshot", http.StatusInternalServerError)
+		return
+	}
+
+	// Serve as PNG image
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "max-age=60")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 // formatDuration formats a duration in a human-readable way

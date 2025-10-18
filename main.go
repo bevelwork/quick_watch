@@ -339,6 +339,7 @@ type TargetFields struct {
 	SizeAlerts    bool
 	CheckStrategy bool
 	Alerts        bool
+	Ports         bool
 }
 
 // applyDefaultsAfterClean applies default values after cleaning

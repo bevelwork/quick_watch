@@ -327,6 +327,10 @@ func handleEditTargets(stateFile string) {
 			if target.Duration == 0 && existing.Duration > 0 {
 				target.Duration = existing.Duration
 			}
+			// Preserve ports if not specified (important for TCP targets)
+			if !fields.Ports && len(target.Ports) == 0 && len(existing.Ports) > 0 {
+				target.Ports = existing.Ports
+			}
 			if !fields.Alerts && len(target.Alerts) == 0 {
 				if len(existing.Alerts) > 0 {
 					target.Alerts = existing.Alerts
@@ -440,6 +444,10 @@ func createTempStateFile(stateManager *StateManager) (string, error) {
 		if target.Duration > 0 {
 			entry["duration"] = target.Duration
 		}
+		// Include ports if set (for TCP targets) - always include even if empty to show in editor
+		if target.CheckStrategy == "tcp" {
+			entry["ports"] = target.Ports
+		}
 		// Include alerts field to preserve user-set alerts
 		if len(target.Alerts) > 0 {
 			entry["alerts"] = target.Alerts
@@ -510,6 +518,15 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{2, "threshold: 30", "# seconds; default: 30"},
 		{2, "alerts: [console, slack-alerts]", alertsDesc},
 		{0, "", ""},
+		{0, "Page Comparison Example (visual regression testing):", ""},
+		{0, "marketing-site:", ""},
+		{2, "url: https://example.com", "# page to monitor"},
+		{2, "check_strategy: page-comparison", "# captures and compares screenshots"},
+		{2, "visual_threshold: 5.0", "# % difference; default: 5.0"},
+		{2, "screenshot_path: ./screenshots", "# optional; default: ./screenshots"},
+		{2, "threshold: 30", "# seconds; default: 30"},
+		{2, "alerts: [console, slack-alerts]", alertsDesc},
+		{0, "", ""},
 		{0, "Webhook Target Example (manually triggered):", ""},
 		{0, "deployment-alert:", ""},
 		{2, "url: deployment-alert", "# identifier (not a real URL)"},
@@ -523,6 +540,8 @@ func addEditCommentsForSimplified(data []byte, availableAlerts []string) []byte 
 		{0, "  threshold: 30", "# alert threshold in seconds"},
 		{0, "  status_codes: ['*']", "# acceptable codes (http only)"},
 		{0, "  ports: [22, 80, 443]", "# ports to check (tcp only)"},
+		{0, "  visual_threshold: 5.0", "# % difference (page-comparison only)"},
+		{0, "  screenshot_path: ./screenshots", "# screenshot storage (page-comparison only)"},
 		{0, "  duration: 300", "# auto-recovery seconds (webhook only)"},
 		{0, "", ""},
 	})
@@ -544,9 +563,10 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 	}
 
 	validCheckStrategies := map[string]bool{
-		"http":    true,
-		"webhook": true,
-		"tcp":     true,
+		"http":            true,
+		"webhook":         true,
+		"tcp":             true,
+		"page-comparison": true,
 	}
 
 	// Get valid alert alerts from alerts
@@ -574,6 +594,7 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 		}
 
 		// Validate URL format (basic check) - skip for webhook and tcp targets
+		// page-comparison requires http:// or https:// URLs
 		if target.CheckStrategy != "webhook" && target.CheckStrategy != "tcp" {
 			if !strings.HasPrefix(target.URL, "http://") && !strings.HasPrefix(target.URL, "https://") {
 				return fmt.Errorf("target %s: url must start with http:// or https://", url)
@@ -592,6 +613,13 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 			}
 		}
 
+		// Validate page-comparison specific fields
+		if target.CheckStrategy == "page-comparison" {
+			if target.VisualThreshold < 0 || target.VisualThreshold > 100 {
+				return fmt.Errorf("target %s: visual_threshold must be between 0.0 and 100.0, got %.2f", url, target.VisualThreshold)
+			}
+		}
+
 		// Validate method if provided (don't apply default, just validate)
 		if target.Method != "" && !validHTTPMethods[strings.ToUpper(target.Method)] {
 			return fmt.Errorf("target %s: invalid method '%s', must be one of: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, TRACE, CONNECT", url, target.Method)
@@ -604,7 +632,7 @@ func validateTargets(targets map[string]Target, stateManager *StateManager) erro
 
 		// Validate check strategy if provided (don't apply default, just validate)
 		if target.CheckStrategy != "" && !validCheckStrategies[target.CheckStrategy] {
-			return fmt.Errorf("target %s: invalid check_strategy '%s', must be one of: http, tcp, webhook", url, target.CheckStrategy)
+			return fmt.Errorf("target %s: invalid check_strategy '%s', must be one of: http, tcp, webhook, page-comparison", url, target.CheckStrategy)
 		}
 	}
 	return nil
@@ -1138,6 +1166,10 @@ func applyTargetsYAML(stateManager *StateManager, modifiedData []byte) {
 			if !fields.CheckStrategy && target.CheckStrategy == "" {
 				target.CheckStrategy = existing.CheckStrategy
 			}
+			// Preserve ports if not specified (important for TCP targets)
+			if !fields.Ports && len(target.Ports) == 0 && len(existing.Ports) > 0 {
+				target.Ports = existing.Ports
+			}
 			if !fields.Alerts && len(target.Alerts) == 0 {
 				if len(existing.Alerts) > 0 {
 					target.Alerts = existing.Alerts
@@ -1526,6 +1558,23 @@ func parseTargetsInterface(src any, out map[string]Target, fields map[string]*Ta
 				if duration, ok := targetMap["duration"].(int); ok {
 					target.Duration = duration
 				}
+				// Ports: parse array of integers for TCP checks
+				if ports, ok := targetMap["ports"].([]any); ok {
+					f.Ports = true
+					for _, port := range ports {
+						if portInt, ok := port.(int); ok {
+							target.Ports = append(target.Ports, portInt)
+						}
+					}
+				}
+				// Visual threshold: for page-comparison strategy
+				if visualThreshold, ok := targetMap["visual_threshold"].(float64); ok {
+					target.VisualThreshold = visualThreshold
+				}
+				// Screenshot path: for page-comparison strategy
+				if screenshotPath, ok := targetMap["screenshot_path"].(string); ok {
+					target.ScreenshotPath = screenshotPath
+				}
 				// Alerts: accept string or list
 				if aval, ok := targetMap["alerts"]; ok {
 					switch at := aval.(type) {
@@ -1577,6 +1626,23 @@ func parseTargetsInterface(src any, out map[string]Target, fields map[string]*Ta
 							target.StatusCodes = append(target.StatusCodes, codeStr)
 						}
 					}
+				}
+				// Ports: parse array of integers for TCP checks
+				if ports, ok := targetMap["ports"].([]any); ok {
+					f.Ports = true
+					for _, port := range ports {
+						if portInt, ok := port.(int); ok {
+							target.Ports = append(target.Ports, portInt)
+						}
+					}
+				}
+				// Visual threshold: for page-comparison strategy
+				if visualThreshold, ok := targetMap["visual_threshold"].(float64); ok {
+					target.VisualThreshold = visualThreshold
+				}
+				// Screenshot path: for page-comparison strategy
+				if screenshotPath, ok := targetMap["screenshot_path"].(string); ok {
+					target.ScreenshotPath = screenshotPath
 				}
 				// Alerts: accept string or list
 				if aval, ok := targetMap["alerts"]; ok {

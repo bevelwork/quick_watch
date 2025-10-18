@@ -7,7 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg" // Register JPEG decoder for chromedp screenshots
+	"image/png"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -15,25 +20,30 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	qc "github.com/bevelwork/quick_color"
+	"github.com/chromedp/chromedp"
 )
 
 // CheckResult represents the result of a health check
 type CheckResult struct {
-	Success      bool          `json:"success"`
-	StatusCode   int           `json:"status_code,omitempty"`
-	ResponseTime time.Duration `json:"response_time"`
-	ResponseSize int64         `json:"response_size,omitempty"`
-	Error        string        `json:"error,omitempty"`
-	Timestamp    time.Time     `json:"timestamp"`
-	AlertCount   int           `json:"alert_count,omitempty"` // Number of alerts sent for this incident (for exponential backoff display)
-	ContentType  string        `json:"content_type,omitempty"`
-	ResponseBody string        `json:"response_body,omitempty"` // Response body (limited for JSON)
+	Success          bool          `json:"success"`
+	StatusCode       int           `json:"status_code,omitempty"`
+	ResponseTime     time.Duration `json:"response_time"`
+	ResponseSize     int64         `json:"response_size,omitempty"`
+	Error            string        `json:"error,omitempty"`
+	Timestamp        time.Time     `json:"timestamp"`
+	AlertCount       int           `json:"alert_count,omitempty"` // Number of alerts sent for this incident (for exponential backoff display)
+	ContentType      string        `json:"content_type,omitempty"`
+	ResponseBody     string        `json:"response_body,omitempty"`     // Response body (limited for JSON)
+	VisualDifference float64       `json:"visual_difference,omitempty"` // For page-comparison: percentage difference (0.0-100.0)
+	ScreenshotPath   string        `json:"screenshot_path,omitempty"`   // For page-comparison: path to current screenshot
+	DiffImagePath    string        `json:"diff_image_path,omitempty"`   // For page-comparison: path to diff image
 }
 
 // CheckStrategy defines the interface for health check strategies
@@ -343,6 +353,404 @@ func (t *TCPCheckStrategy) Check(ctx context.Context, target *Target) (*CheckRes
 // Name returns the strategy name
 func (t *TCPCheckStrategy) Name() string {
 	return "tcp"
+}
+
+// PageComparisonCheckStrategy implements visual regression testing
+type PageComparisonCheckStrategy struct {
+	timeout        time.Duration
+	screenshotPath string
+}
+
+// NewPageComparisonCheckStrategy creates a new page comparison check strategy
+func NewPageComparisonCheckStrategy() *PageComparisonCheckStrategy {
+	return &PageComparisonCheckStrategy{
+		timeout:        30 * time.Second,
+		screenshotPath: "./screenshots",
+	}
+}
+
+// Check performs visual regression testing by capturing and comparing screenshots
+func (p *PageComparisonCheckStrategy) Check(ctx context.Context, target *Target) (*CheckResult, error) {
+	start := time.Now()
+
+	// Use custom screenshot path if specified
+	screenshotPath := p.screenshotPath
+	if target.ScreenshotPath != "" {
+		screenshotPath = target.ScreenshotPath
+	}
+
+	// Ensure screenshots directory exists
+	if err := os.MkdirAll(screenshotPath, 0755); err != nil {
+		return &CheckResult{
+			Success:   false,
+			Error:     fmt.Sprintf("Failed to create screenshot directory: %v", err),
+			Timestamp: start,
+		}, nil
+	}
+
+	// Sanitize target name for file path
+	safeName := strings.ReplaceAll(target.Name, " ", "_")
+	safeName = strings.ReplaceAll(safeName, "/", "-")
+	safeName = strings.ToLower(safeName)
+
+	// Use timestamped filename for ring buffer
+	timestamp := time.Now().Unix()
+	currentPath := fmt.Sprintf("%s/%s_current_%d.png", screenshotPath, safeName, timestamp)
+	diffPath := fmt.Sprintf("%s/%s_diff.png", screenshotPath, safeName)
+
+	// Capture screenshot
+	screenshot, err := p.captureScreenshot(ctx, target.URL)
+	if err != nil {
+		return &CheckResult{
+			Success:   false,
+			Error:     fmt.Sprintf("Screenshot capture failed: %v", err),
+			Timestamp: start,
+		}, nil
+	}
+
+	// Save current screenshot
+	if err := os.WriteFile(currentPath, screenshot, 0644); err != nil {
+		return &CheckResult{
+			Success:   false,
+			Error:     fmt.Sprintf("Failed to save screenshot: %v", err),
+			Timestamp: start,
+		}, nil
+	}
+
+	// Maintain ring buffer of 100 screenshots
+	if err := p.maintainScreenshotRingBuffer(screenshotPath, safeName, 100); err != nil {
+		log.Printf("Warning: Failed to maintain screenshot ring buffer: %v", err)
+	}
+
+	// Count existing baseline screenshots (warmup phase: first 5 screenshots)
+	baselineCount := 0
+	for i := 1; i <= 5; i++ {
+		baselinePath := fmt.Sprintf("%s/%s_baseline_%d.png", screenshotPath, safeName, i)
+		if _, err := os.Stat(baselinePath); err == nil {
+			baselineCount++
+		}
+	}
+
+	// Warmup phase: collect first 5 baseline screenshots
+	if baselineCount < 5 {
+		baselineNum := baselineCount + 1
+		baselinePath := fmt.Sprintf("%s/%s_baseline_%d.png", screenshotPath, safeName, baselineNum)
+		if err := os.WriteFile(baselinePath, screenshot, 0644); err != nil {
+			return &CheckResult{
+				Success:   false,
+				Error:     fmt.Sprintf("Failed to save baseline %d: %v", baselineNum, err),
+				Timestamp: start,
+			}, nil
+		}
+
+		return &CheckResult{
+			Success:          true,
+			ResponseTime:     time.Since(start),
+			Timestamp:        start,
+			VisualDifference: 0.0,
+			ScreenshotPath:   currentPath,
+			ContentType:      "image/png",
+			ResponseBody:     fmt.Sprintf("Warmup: Baseline %d/5 saved", baselineNum),
+		}, nil
+	}
+
+	// Compare against ALL baseline screenshots and find minimum difference
+	minDifference := 200.0 // Start above 100% so we always capture at least one baseline
+	var bestMatchBaseline int
+	var bestBaselineData []byte
+
+	for i := 1; i <= 5; i++ {
+		baselinePath := fmt.Sprintf("%s/%s_baseline_%d.png", screenshotPath, safeName, i)
+		baselineData, err := os.ReadFile(baselinePath)
+		if err != nil {
+			// Skip missing baselines
+			continue
+		}
+
+		// Compare images
+		difference, err := p.compareImages(baselineData, screenshot)
+		if err != nil {
+			// Skip comparison errors
+			continue
+		}
+
+		// Track minimum difference (first baseline is always captured due to 200% initial value)
+		if difference < minDifference {
+			minDifference = difference
+			bestMatchBaseline = i
+			bestBaselineData = baselineData
+		}
+	}
+
+	// If no baselines could be loaded or compared, return error
+	if bestBaselineData == nil {
+		return &CheckResult{
+			Success:   false,
+			Error:     "Failed to load or compare any baseline screenshots",
+			Timestamp: start,
+		}, nil
+	}
+
+	// Cap minDifference at 100% for display purposes
+	if minDifference > 100.0 {
+		minDifference = 100.0
+	}
+
+	// Generate diff image using the best matching baseline
+	diffImage, err := p.generateDiffImage(bestBaselineData, screenshot)
+	if err == nil && diffImage != nil {
+		os.WriteFile(diffPath, diffImage, 0644)
+	}
+
+	// Get threshold (default 5.0%)
+	threshold := 5.0
+	if target.VisualThreshold > 0 {
+		threshold = target.VisualThreshold
+	}
+
+	// Determine success based on threshold
+	success := minDifference <= threshold
+
+	responseTime := time.Since(start)
+
+	var errorMsg string
+	var statusMsg string
+	if success {
+		statusMsg = fmt.Sprintf("Visual difference: %.2f%% (threshold: %.2f%%, best match: baseline %d)", 
+			minDifference, threshold, bestMatchBaseline)
+	} else {
+		errorMsg = fmt.Sprintf("Visual difference %.2f%% exceeds threshold %.2f%% (checked against 5 baselines, best match: baseline %d)", 
+			minDifference, threshold, bestMatchBaseline)
+		statusMsg = errorMsg
+	}
+
+	return &CheckResult{
+		Success:          success,
+		ResponseTime:     responseTime,
+		Timestamp:        start,
+		Error:            errorMsg,
+		ContentType:      "image/png",
+		ResponseBody:     statusMsg,
+		VisualDifference: minDifference,
+		ScreenshotPath:   currentPath,
+		DiffImagePath:    diffPath,
+	}, nil
+}
+
+// captureScreenshot captures a screenshot of the given URL using chromedp
+func (p *PageComparisonCheckStrategy) captureScreenshot(ctx context.Context, url string) ([]byte, error) {
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	// Create chromedp context
+	allocCtx, allocCancel := chromedp.NewContext(ctx)
+	defer allocCancel()
+
+	// Capture screenshot
+	var buf []byte
+	if err := chromedp.Run(allocCtx,
+		chromedp.Navigate(url),
+		chromedp.WaitReady("body"),
+		chromedp.FullScreenshot(&buf, 90),
+	); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
+}
+
+// compareImages compares two PNG images and returns the percentage difference
+func (p *PageComparisonCheckStrategy) compareImages(baseline, current []byte) (float64, error) {
+	// Decode baseline image
+	baselineImg, _, err := image.Decode(bytes.NewReader(baseline))
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode baseline: %v", err)
+	}
+
+	// Decode current image
+	currentImg, _, err := image.Decode(bytes.NewReader(current))
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode current: %v", err)
+	}
+
+	// Get image bounds
+	baselineBounds := baselineImg.Bounds()
+	currentBounds := currentImg.Bounds()
+
+	// If dimensions don't match, return 100% difference
+	if baselineBounds != currentBounds {
+		return 100.0, nil
+	}
+
+	// Compare pixel by pixel
+	width := baselineBounds.Dx()
+	height := baselineBounds.Dy()
+	totalPixels := width * height
+	differentPixels := 0
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			baselineColor := baselineImg.At(x, y)
+			currentColor := currentImg.At(x, y)
+
+			br, bg, bb, ba := baselineColor.RGBA()
+			cr, cg, cb, ca := currentColor.RGBA()
+
+			// Compare with tolerance for minor differences
+			if !colorsMatch(br, bg, bb, ba, cr, cg, cb, ca) {
+				differentPixels++
+			}
+		}
+	}
+
+	// Calculate percentage difference
+	difference := (float64(differentPixels) / float64(totalPixels)) * 100.0
+
+	return difference, nil
+}
+
+// colorsMatch checks if two colors match with a small tolerance
+func colorsMatch(r1, g1, b1, a1, r2, g2, b2, a2 uint32) bool {
+	// Allow small differences in color values (threshold of 1%)
+	const tolerance uint32 = 655 // ~1% of 65535
+
+	return abs(r1, r2) <= tolerance &&
+		abs(g1, g2) <= tolerance &&
+		abs(b1, b2) <= tolerance &&
+		abs(a1, a2) <= tolerance
+}
+
+// abs returns the absolute difference between two uint32 values
+func abs(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+// maintainScreenshotRingBuffer keeps only the latest N screenshot files
+func (p *PageComparisonCheckStrategy) maintainScreenshotRingBuffer(screenshotPath, safeName string, maxScreenshots int) error {
+	// Pattern to match current screenshots for this target
+	pattern := fmt.Sprintf("%s_current_", safeName)
+	
+	// Read directory
+	files, err := os.ReadDir(screenshotPath)
+	if err != nil {
+		return fmt.Errorf("failed to read screenshots directory: %v", err)
+	}
+	
+	// Collect all current screenshots for this target
+	type screenshotFile struct {
+		name      string
+		timestamp int64
+	}
+	var screenshots []screenshotFile
+	
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		
+		fileName := file.Name()
+		if strings.HasPrefix(fileName, pattern) && strings.HasSuffix(fileName, ".png") {
+			// Extract timestamp from filename
+			parts := strings.TrimPrefix(fileName, pattern)
+			parts = strings.TrimSuffix(parts, ".png")
+			if ts, err := strconv.ParseInt(parts, 10, 64); err == nil {
+				screenshots = append(screenshots, screenshotFile{
+					name:      fileName,
+					timestamp: ts,
+				})
+			}
+		}
+	}
+	
+	// If we have more than maxScreenshots, delete the oldest ones
+	if len(screenshots) > maxScreenshots {
+		// Sort by timestamp (oldest first)
+		sort.Slice(screenshots, func(i, j int) bool {
+			return screenshots[i].timestamp < screenshots[j].timestamp
+		})
+		
+		// Delete oldest files
+		deleteCount := len(screenshots) - maxScreenshots
+		for i := 0; i < deleteCount; i++ {
+			filePath := filepath.Join(screenshotPath, screenshots[i].name)
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to remove old screenshot %s: %v", screenshots[i].name, err)
+			}
+		}
+		
+		// Ring buffer cleanup happens silently every check
+	}
+	
+	return nil
+}
+
+// generateDiffImage creates a visual diff image highlighting differences
+func (p *PageComparisonCheckStrategy) generateDiffImage(baseline, current []byte) ([]byte, error) {
+	// Decode images
+	baselineImg, _, err := image.Decode(bytes.NewReader(baseline))
+	if err != nil {
+		return nil, err
+	}
+
+	currentImg, _, err := image.Decode(bytes.NewReader(current))
+	if err != nil {
+		return nil, err
+	}
+
+	// Get bounds
+	bounds := baselineImg.Bounds()
+	if bounds != currentImg.Bounds() {
+		// Can't create diff for different sizes
+		return nil, fmt.Errorf("image dimensions don't match")
+	}
+
+	// Create diff image
+	diffImg := image.NewRGBA(bounds)
+
+	// Compare and highlight differences in red
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			baselineColor := baselineImg.At(x, y)
+			currentColor := currentImg.At(x, y)
+
+			br, bg, bb, ba := baselineColor.RGBA()
+			cr, cg, cb, ca := currentColor.RGBA()
+
+			if colorsMatch(br, bg, bb, ba, cr, cg, cb, ca) {
+				// Same pixel - show grayscale current
+				gray := (cr + cg + cb) / 3
+				diffImg.Set(x, y, color.RGBA{
+					R: uint8(gray >> 8),
+					G: uint8(gray >> 8),
+					B: uint8(gray >> 8),
+					A: 255,
+				})
+			} else {
+				// Different pixel - highlight in red
+				diffImg.Set(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+			}
+		}
+	}
+
+	// Encode diff image to PNG
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, diffImg); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// Name returns the strategy name
+func (p *PageComparisonCheckStrategy) Name() string {
+	return "page-comparison"
 }
 
 // ConsoleAlertStrategy implements console-based alerting
