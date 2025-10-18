@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick Watch - Targets</title>
+    <link rel="stylesheet" href="/web/css/target_list.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 Quick Watch Targets</h1>
+            <p class="subtitle">Monitoring {{.TargetCount}} target(s)</p>
+        </header>
+        
+        <div class="filter-container">
+            <input 
+                type="text" 
+                id="filterInput" 
+                class="filter-input" 
+                placeholder="Filter targets by name or URL..." 
+                oninput="filterTargets()"
+                autocomplete="off"
+            />
+            <button class="clear-filter-btn" onclick="clearFilter()">Clear Filter</button>
+            <span id="filterCount" class="filter-count" style="display: none;"></span>
+        </div>
+        
+        <div class="target-grid">
+            {{.TargetCards}}
+        </div>
+        
+        {{.EmptyState}}
+        
+        <div class="footer">
+            <div class="footer-links">
+                <a href="https://bevel.work" target="_blank" rel="noopener noreferrer">Created by Bevel.work</a>
+                <a href="https://bevel.work/quick-tools" target="_blank" rel="noopener noreferrer">More Quick-Tools</a>
+                <a href="https://github.com/bevelwork/quick_watch/tree/main/docs" target="_blank" rel="noopener noreferrer">Docs</a>
+            </div>
+        </div>
+    </div>
+    <script src="/web/js/target_list.js"></script>
+</body>
+</html>
+

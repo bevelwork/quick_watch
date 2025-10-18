@@ -91,6 +91,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Register dynamic hook routes
 	s.registerHookRoutes(mux)
 
+	// Serve static web assets (CSS, JS)
+	mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.Dir("./web"))))
+
 	// API endpoints
 	mux.HandleFunc("/api/targets", s.handleTargets)
 	mux.HandleFunc("/api/targets/", s.handleTargetByURL)
@@ -1729,7 +1732,9 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quick Watch - Targets</title>
-    <style>
+    <link rel="stylesheet" href="/web/css/target_list.css">
+    <style display="none">
+        /* CSS moved to /web/css/target_list.css */
         * {
             margin: 0;
             padding: 0;
@@ -1936,7 +1941,9 @@ func (s *Server) handleTargetList(w http.ResponseWriter, r *http.Request) {
             }
         }
     </style>
-    <script>
+    <script src="/web/js/target_list.js" defer></script>
+    <script display="none">
+        /* JavaScript moved to /web/js/target_list.js */
         // Filter functionality
         let filterTimeout;
         
@@ -2464,7 +2471,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s - Quick Watch</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
+    <link rel="stylesheet" href="/web/css/target_detail.css">
+    <style display="none">
+        /* CSS moved to /web/css/target_detail.css */
         * {
             margin: 0;
             padding: 0;
@@ -2819,7 +2828,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         }
     </style>
 </head>
-<body>
+<body data-chart-data='%s' data-check-strategy='%s'>
     <div class="container">
         <header>
             <a href="/" class="back-button">←</a>
@@ -2849,7 +2858,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         </div>
     </div>
     
-    <script>
+    <script src="/web/js/target_detail.js" defer></script>
+    <script display="none">
+        /* JavaScript moved to /web/js/target_detail.js */
         const chartData = %s;
         const checkStrategy = '%s';
         const isPageComparison = checkStrategy === 'page-comparison';
@@ -3404,7 +3415,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         setInterval(updateData, 5000);
     </script>
 </body>
-</html>`, state.Target.Name, targetTitle, statusBadge, targetInfoHTML, targetDetailsHTML, statsHTML, logEntries, noDataMsg, string(chartDataJSON), checkStrategy)
+</html>`, state.Target.Name, string(chartDataJSON), checkStrategy, targetTitle, statusBadge, targetInfoHTML, targetDetailsHTML, statsHTML, logEntries, noDataMsg, string(chartDataJSON), checkStrategy)
 
 	w.Write([]byte(html))
 }

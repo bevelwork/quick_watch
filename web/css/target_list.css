@@ -1,0 +1,242 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background-color: #0d1117;
+    color: #c9d1d9;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 20px;
+}
+
+header {
+    margin-bottom: 30px;
+}
+
+h1 {
+    font-size: 32px;
+    color: #f0f6fc;
+    margin-bottom: 10px;
+}
+
+.subtitle {
+    color: #8b949e;
+    font-size: 16px;
+    margin-bottom: 20px;
+}
+
+.filter-container {
+    margin-bottom: 20px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.filter-input {
+    flex: 1;
+    max-width: 400px;
+    padding: 10px 15px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-size: 14px;
+    outline: none;
+}
+
+.filter-input:focus {
+    border-color: #58a6ff;
+}
+
+.clear-filter-btn {
+    padding: 10px 20px;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #c9d1d9;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.clear-filter-btn:hover {
+    background: #30363d;
+    border-color: #58a6ff;
+}
+
+.filter-count {
+    color: #8b949e;
+    font-size: 14px;
+}
+
+.target-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 20px;
+}
+
+.target-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 20px;
+    text-decoration: none;
+    color: inherit;
+    transition: all 0.2s ease;
+    display: block;
+}
+
+.target-card.hidden {
+    display: none;
+}
+
+.target-card:hover {
+    border-color: #58a6ff;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.target-card.down {
+    border-left: 4px solid #f85149;
+}
+
+.target-card.healthy {
+    border-left: 4px solid #3fb950;
+}
+
+.target-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.status-icon {
+    font-size: 24px;
+}
+
+.target-header h3 {
+    flex: 1;
+    font-size: 18px;
+    color: #f0f6fc;
+}
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-badge.healthy {
+    background: rgba(63, 185, 80, 0.15);
+    color: #3fb950;
+}
+
+.status-badge.down {
+    background: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+}
+
+.target-url {
+    color: #8b949e;
+    font-size: 14px;
+    margin-bottom: 12px;
+    word-break: break-all;
+}
+
+.downtime {
+    background: rgba(248, 81, 73, 0.1);
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+    color: #f85149;
+    font-size: 14px;
+}
+
+.target-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #8b949e;
+    padding-top: 12px;
+    border-top: 1px solid #30363d;
+}
+
+.target-meta strong {
+    color: #c9d1d9;
+}
+
+.target-strategy {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #30363d;
+}
+
+.strategy-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    background: rgba(88, 166, 255, 0.15);
+    color: #58a6ff;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #8b949e;
+}
+
+.empty-state h2 {
+    font-size: 24px;
+    margin-bottom: 10px;
+}
+
+.footer {
+    margin-top: 60px;
+    padding-top: 30px;
+    border-top: 1px solid #30363d;
+    text-align: center;
+    color: #8b949e;
+    font-size: 14px;
+}
+
+.footer-links {
+    display: flex;
+    justify-content: center;
+    gap: 30px;
+    flex-wrap: wrap;
+}
+
+.footer-links a {
+    color: #58a6ff;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.footer-links a:hover {
+    color: #79c0ff;
+}
+
+@media (max-width: 768px) {
+    .target-grid {
+        grid-template-columns: 1fr;
+    }
+    .footer-links {
+        flex-direction: column;
+        gap: 15px;
+    }
+}
+
