@@ -552,6 +552,14 @@ func (p *PageComparisonCheckStrategy) captureScreenshot(ctx context.Context, url
 	if err := chromedp.Run(allocCtx,
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body"),
+		// Wait for network to be idle to ensure page is fully loaded
+		chromedp.Sleep(2*time.Second),
+		// Additional wait for any dynamic content
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// Give the browser time to calculate proper page dimensions
+			time.Sleep(500 * time.Millisecond)
+			return nil
+		}),
 		chromedp.FullScreenshot(&buf, 90),
 	); err != nil {
 		return nil, err

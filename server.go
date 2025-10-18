@@ -2155,7 +2155,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		// Build log entry (most recent at top)
 		statusIcon := "✅"
 		statusClass := "success"
-		if !entry.Success {
+		
+		// Check if this is a warmup/baseline collection entry
+		isWarmup := strings.Contains(entry.ResponseBody, "Warmup:")
+		
+		if isWarmup {
+			statusIcon = "ℹ️"
+			statusClass = "info"
+		} else if !entry.Success {
 			statusIcon = "❌"
 			statusClass = "error"
 		}
@@ -2168,7 +2175,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		}
 
 		statusText := ""
-		if entry.Success {
+		if isWarmup {
+			statusText = "INFO"
+		} else if entry.Success {
 			// Convert milliseconds to seconds with 3 significant digits
 			seconds := float64(entry.ResponseTime) / 1000.0
 			if seconds == 0 {
@@ -2182,20 +2191,25 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		}
 
 		details := ""
-		if entry.StatusCode > 0 {
-			details += fmt.Sprintf("HTTP %d ", entry.StatusCode)
-		}
-		if entry.ErrorMessage != "" {
-			details += entry.ErrorMessage + " "
-		}
-		if entry.AlertSent {
-			details += fmt.Sprintf("Alert #%d sent ", entry.AlertCount)
-		}
-		if entry.WasAcked {
-			details += "Acknowledged "
-		}
-		if entry.WasRecovered {
-			details += "Recovered"
+		if isWarmup {
+			// Show warmup message in details
+			details = entry.ResponseBody
+		} else {
+			if entry.StatusCode > 0 {
+				details += fmt.Sprintf("HTTP %d ", entry.StatusCode)
+			}
+			if entry.ErrorMessage != "" {
+				details += entry.ErrorMessage + " "
+			}
+			if entry.AlertSent {
+				details += fmt.Sprintf("Alert #%d sent ", entry.AlertCount)
+			}
+			if entry.WasAcked {
+				details += "Acknowledged "
+			}
+			if entry.WasRecovered {
+				details += "Recovered"
+			}
 		}
 
 		// Build expanded details section (always present, hidden by default)
@@ -2326,6 +2340,12 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 		statusBadge = `<span class="status-badge healthy">✅ Healthy</span>`
 	}
 
+	// Create target title (make it clickable if it's a web URL)
+	targetTitle := state.Target.Name
+	if strings.HasPrefix(state.Target.URL, "http://") || strings.HasPrefix(state.Target.URL, "https://") {
+		targetTitle = fmt.Sprintf(`<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>`, state.Target.URL, state.Target.Name)
+	}
+
 	// Create acknowledge button section
 	ackButtonHTML := ""
 	if state.IsDown && state.CurrentAckToken != "" && state.AcknowledgedAt == nil {
@@ -2336,22 +2356,23 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
 			<a href="%s" class="ack-button ack-button-active">
 				🔔 Acknowledge
 			</a>
-			<span class="ack-button-hint">Click to acknowledge that you are investigating this target</span>
 		</div>`, ackURL)
 	} else {
 		// Target is healthy or already acknowledged - show disabled button
-		disabledReason := "Target is healthy"
-		if state.AcknowledgedAt != nil {
-			disabledReason = "Already acknowledged"
-		}
-		ackButtonHTML = fmt.Sprintf(`
+		ackButtonHTML = `
 		<div class="ack-button-container">
 			<button class="ack-button ack-button-disabled" disabled>
 				🔔 Acknowledge
 			</button>
-			<span class="ack-button-hint">%s</span>
-		</div>`, disabledReason)
+		</div>`
 	}
+	
+	// Combine URL and acknowledge button into target-info section
+	targetInfoHTML := fmt.Sprintf(`
+	<div class="target-info">
+		<div class="target-url">%s</div>
+		%s
+	</div>`, state.Target.URL, ackButtonHTML)
 
 	noDataMsg := ""
 	if len(logEntries) == 0 {
@@ -2479,6 +2500,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             color: #f0f6fc;
             flex: 1;
         }
+        h1 a {
+            color: #f0f6fc;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        h1 a:hover {
+            color: #58a6ff;
+        }
         .status-badge {
             padding: 8px 16px;
             border-radius: 16px;
@@ -2530,24 +2559,24 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             cursor: not-allowed;
             opacity: 0.6;
         }
-        .ack-button-hint {
-            display: block;
-            margin-top: 8px;
-            font-size: 12px;
-            color: #8b949e;
-            font-style: italic;
-        }
         .target-info {
             background: #161b22;
             border: 1px solid #30363d;
             border-radius: 6px;
             padding: 20px;
             margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
         }
         .target-url {
             color: #8b949e;
             font-size: 14px;
-            margin-bottom: 10px;
+            flex: 1;
+        }
+        .target-info .ack-button-container {
+            margin: 0;
+            text-align: right;
         }
         .chart-container {
             background: #161b22;
@@ -2569,6 +2598,32 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             border-bottom: 1px solid #30363d;
             font-weight: 600;
             font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .pause-button {
+            padding: 6px 12px;
+            background: rgba(88, 166, 255, 0.15);
+            color: #58a6ff;
+            border: 1px solid #58a6ff;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+        .pause-button:hover {
+            background: rgba(88, 166, 255, 0.25);
+        }
+        .pause-button.paused {
+            background: rgba(187, 128, 9, 0.15);
+            color: #d29922;
+            border-color: #d29922;
+        }
+        .pause-button.paused:hover {
+            background: rgba(187, 128, 9, 0.25);
         }
         .terminal-body {
             padding: 16px;
@@ -2601,6 +2656,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         }
         .log-entry.recovered {
             color: #79c0ff;
+        }
+        .log-entry.info {
+            color: #8b949e;
         }
         .log-expand {
             color: #8b949e;
@@ -2741,6 +2799,24 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
+        @media (max-width: 768px) {
+            .target-info {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+            .target-info .ack-button-container {
+                text-align: center;
+            }
+            .terminal-header {
+                flex-direction: column;
+                gap: 8px;
+                align-items: stretch;
+            }
+            .pause-button {
+                width: 100%%;
+            }
+        }
     </style>
 </head>
 <body>
@@ -2750,10 +2826,6 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             <h1>%s</h1>
             %s
         </header>
-        
-        <div class="target-info">
-            <div class="target-url">%s</div>
-        </div>
         
         %s
         
@@ -2767,7 +2839,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         
         <div class="terminal-container">
             <div class="terminal-header">
-                📋 Check History (showing last 100 checks)
+                <span>📋 Check History (showing last 100 checks)</span>
+                <button id="pauseButton" class="pause-button" onclick="togglePause()">⏸️ Pause</button>
             </div>
             <div class="terminal-body">
                 %s
@@ -2819,7 +2892,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 datasets: [{
                     label: isPageComparison ? 'Visual Difference (%%)' : 'Response Time (s)',
                     data: chartData.map(d => {
-                        if (!d.success) return 0;
+                        if (!d.success) return null;
                         return isPageComparison ? d.visualDifference : d.responseTime / 1000;
                     }),
                     borderColor: '#3fb950',
@@ -2848,7 +2921,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                     }
                 }, {
                     label: 'Failed Checks',
-                    data: chartData.map(d => !d.success ? 0 : null),
+                    data: chartData.map(d => !d.success ? (isPageComparison ? 100 : 0) : null),
                     borderColor: '#f85149',
                     backgroundColor: '#f85149',
                     borderWidth: 0,
@@ -2930,6 +3003,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                     },
                     y: {
                         beginAtZero: true,
+                        min: isPageComparison ? 0 : undefined,
+                        max: isPageComparison ? 100 : undefined,
                         grid: {
                             color: '#30363d',
                             drawBorder: false
@@ -2941,8 +3016,8 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                             },
                             callback: function(value) {
                                 if (isPageComparison) {
-                                    // Format as percentage for page-comparison
-                                    return value.toFixed(1) + '%%';
+                                    // Format as percentage for page-comparison (no decimals)
+                                    return Math.round(value) + '%%';
                                 } else {
                                     // Format y-axis ticks with up to 4 significant digits for response time
                                     if (value === 0) return '0s';
@@ -2959,6 +3034,25 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         
         // Track expanded entries
         const expandedEntries = new Set();
+        
+        // Track pause state
+        let isPaused = false;
+        
+        // Toggle pause/unpause
+        function togglePause() {
+            isPaused = !isPaused;
+            const pauseButton = document.getElementById('pauseButton');
+            
+            if (isPaused) {
+                pauseButton.textContent = '▶️ Resume';
+                pauseButton.classList.add('paused');
+            } else {
+                pauseButton.textContent = '⏸️ Pause';
+                pauseButton.classList.remove('paused');
+                // Immediately update to catch up on missed changes
+                updateData();
+            }
+        }
         
         // Toggle target details section
         function toggleDetails() {
@@ -2999,6 +3093,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         
         // Auto-update data every 5 seconds without page reload
         async function updateData() {
+            // Skip update if paused
+            if (isPaused) return;
+            
             try {
                 const response = await fetch(window.location.pathname.replace('/targets/', '/api/history/'));
                 if (!response.ok) return;
@@ -3029,16 +3126,10 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                     if (data.target.is_down && data.target.current_ack_token && !data.target.acknowledged_at) {
                         // Target is down and not acknowledged - show active button
                         const ackURL = '/api/acknowledge/' + data.target.current_ack_token;
-                        ackButtonContainer.innerHTML = '<a href="' + ackURL + '" class="ack-button ack-button-active">🔔 Acknowledge</a>' +
-                            '<span class="ack-button-hint">Click to acknowledge that you are investigating this target</span>';
+                        ackButtonContainer.innerHTML = '<a href="' + ackURL + '" class="ack-button ack-button-active">🔔 Acknowledge</a>';
                     } else {
                         // Target is healthy or already acknowledged - show disabled button
-                        let disabledReason = 'Target is healthy';
-                        if (data.target.acknowledged_at) {
-                            disabledReason = 'Already acknowledged';
-                        }
-                        ackButtonContainer.innerHTML = '<button class="ack-button ack-button-disabled" disabled>🔔 Acknowledge</button>' +
-                            '<span class="ack-button-hint">' + disabledReason + '</span>';
+                        ackButtonContainer.innerHTML = '<button class="ack-button ack-button-disabled" disabled>🔔 Acknowledge</button>';
                     }
                 }
                 
@@ -3122,7 +3213,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
             
             chart.data.labels = newLabels;
             chart.data.datasets[0].data = newData.map(d => {
-                if (!d.success) return 0;
+                if (!d.success) return null;
                 return isPageComparison ? d.visualDifference : d.responseTime / 1000;
             });
             chart.data.datasets[0].pointBackgroundColor = newData.map(d => d.success ? '#3fb950' : '#f85149');
@@ -3137,7 +3228,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                     return '#3fb950';
                 }
             };
-            chart.data.datasets[1].data = newData.map(d => !d.success ? 0 : null);
+            chart.data.datasets[1].data = newData.map(d => !d.success ? (isPageComparison ? 100 : 0) : null);
             
             // Store for tooltip callbacks
             window.chartData = newData;
@@ -3160,7 +3251,14 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 // Build log entry
                 let statusIcon = '✅';
                 let statusClass = 'success';
-                if (!entry.Success) {
+                
+                // Check if this is a warmup/baseline collection entry
+                const isWarmup = entry.ResponseBody && entry.ResponseBody.includes('Warmup:');
+                
+                if (isWarmup) {
+                    statusIcon = 'ℹ️';
+                    statusClass = 'info';
+                } else if (!entry.Success) {
                     statusIcon = '❌';
                     statusClass = 'error';
                 }
@@ -3173,7 +3271,9 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 }
                 
                 let statusText = '';
-                if (entry.Success) {
+                if (isWarmup) {
+                    statusText = 'INFO';
+                } else if (entry.Success) {
                     const seconds = entry.ResponseTime / 1000.0;
                     if (seconds === 0) {
                         statusText = 'OK - 0s';
@@ -3185,11 +3285,16 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
                 }
                 
                 let details = '';
-                if (entry.StatusCode > 0) details += 'HTTP ' + entry.StatusCode + ' ';
-                if (entry.ErrorMessage) details += entry.ErrorMessage + ' ';
-                if (entry.AlertSent) details += 'Alert #' + entry.AlertCount + ' sent ';
-                if (entry.WasAcked) details += 'Acknowledged ';
-                if (entry.WasRecovered) details += 'Recovered';
+                if (isWarmup) {
+                    // Show warmup message in details
+                    details = entry.ResponseBody;
+                } else {
+                    if (entry.StatusCode > 0) details += 'HTTP ' + entry.StatusCode + ' ';
+                    if (entry.ErrorMessage) details += entry.ErrorMessage + ' ';
+                    if (entry.AlertSent) details += 'Alert #' + entry.AlertCount + ' sent ';
+                    if (entry.WasAcked) details += 'Acknowledged ';
+                    if (entry.WasRecovered) details += 'Recovered';
+                }
                 
                 // Build expanded content
                 let expandedLines = [];
@@ -3299,7 +3404,7 @@ func (s *Server) handleTargetDetail(w http.ResponseWriter, r *http.Request) {
         setInterval(updateData, 5000);
     </script>
 </body>
-</html>`, state.Target.Name, state.Target.Name, statusBadge, state.Target.URL, ackButtonHTML, targetDetailsHTML, statsHTML, logEntries, noDataMsg, string(chartDataJSON), checkStrategy)
+</html>`, state.Target.Name, targetTitle, statusBadge, targetInfoHTML, targetDetailsHTML, statsHTML, logEntries, noDataMsg, string(chartDataJSON), checkStrategy)
 
 	w.Write([]byte(html))
 }
